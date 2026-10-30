@@ -8,6 +8,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.material3.Switch
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,7 +44,8 @@ private data class SpatialPerson(
     var cardOffset: FloatArray,
     var targetLocal: FloatArray? = null,
     var renderedLocal: FloatArray? = null,
-    var hits: Int = 1
+    var hits: Int = 1,
+    var recognitionKey: String = java.util.UUID.randomUUID().toString()
 )
 
 private data class DetectedFaceBox(val trackingId: Int?, val left: Float, val top: Float,
@@ -46,12 +53,13 @@ private data class DetectedFaceBox(val trackingId: Int?, val left: Float, val to
 
 private data class ProjectedProfile(
     val number: Int, val x: Float, val y: Float,
-    val width: Float, val height: Float, val estimated: Boolean, val depthMeters: Float
+    val width: Float, val height: Float, val estimated: Boolean, val depthMeters: Float,
+    val recognition: FaceRecognitionResult?
 )
 
-/** Uses ARCore camera frames exclusively; CameraX is disposed before entering this mode. */
+/** ARCore owns the camera; face JPEGs are made from the same frame as detection. */
 @Composable
-internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnapshot) {
+internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnapshot, onOpenConnection: () -> Unit) {
     val context = LocalContext.current
     val hostView = LocalView.current
     val executor = remember(context) { ContextCompat.getMainExecutor(context) }
@@ -69,14 +77,22 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
     var detectedBoxes by remember { mutableStateOf<List<DetectedFaceBox>>(emptyList()) }
     var detectionCount by remember { mutableIntStateOf(0) }
     val runtime = remember { SpatialRuntime() }
+    val recognitionScope = rememberCoroutineScope()
+    val pipeline = remember { FaceRecognitionPipeline(recognitionScope) }
+    var showRecognition by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    val preferences = remember(context) { context.getSharedPreferences("server_connection", 0) }
     val captureExecutor = remember { java.util.concurrent.Executors.newSingleThreadExecutor() }
     DisposableEffect(snapshot) {
         snapshot.capture = { callback ->
+            snapshot.stage = "ARフレーム待ち"
             runtime.captureRequest?.invoke(Result.failure(IllegalStateException("撮影要求が更新されました")))
             runtime.captureRequest = callback
         }
+        snapshot.cancelCapture = { runtime.captureRequest = null }
         onDispose {
             snapshot.capture = null
+            snapshot.cancelCapture = null
             runtime.captureRequest?.invoke(Result.failure(IllegalStateException("カメラを終了しました")))
             runtime.captureRequest = null
             captureExecutor.shutdown()
@@ -107,16 +123,19 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
             onSessionFailed = {
                 failure = "空間ARを開始できませんでした。ARCore対応端末とGoogle Play開発者サービス（AR）を確認してください。\n${it.javaClass.simpleName}"
             },
-            onSessionPaused = { cards = emptyList(); detectedBoxes = emptyList() },
+            onSessionPaused = { cards = emptyList(); detectedBoxes = emptyList(); pipeline.reset() },
             onSessionUpdated = { session, frame ->
                 runtime.captureRequest?.let { callback ->
                     try {
                         val rotation = cameraImageRotation(context, session.cameraConfig.cameraId, hostView.display?.rotation)
                         val image = frame.acquireCameraImage()
+                        snapshot.stage = "カメラ画像取得済み・変換待ち"
                         runtime.captureRequest = null
                         try {
                             captureExecutor.execute {
+                                snapshot.stage = "YUV画像を変換中"
                                 val result = runCatching { image.use { cameraImageToBitmap(it, rotation) } }
+                                snapshot.stage = if (result.isSuccess) "画像取得完了" else "画像変換失敗"
                                 executor.execute { callback(result) }
                             }
                         } catch (exception: Exception) {
@@ -137,6 +156,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                     cards = emptyList()
                     detectedBoxes = emptyList()
                     detectionCount = 0
+                    pipeline.reset()
                 }
                 val camera = frame.camera
                 if (camera.trackingState != TrackingState.TRACKING) {
@@ -178,7 +198,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                             if (origin == null || corner == null) null
                             else ProjectedProfile(person.number, origin[0], origin[1],
                                 abs(corner[0] - origin[0]), abs(corner[1] - origin[1]), person.estimatedDepth,
-                                person.depthMeters)
+                                person.depthMeters, pipeline.results[person.recognitionKey])
                         }
                     status = "追跡中：${people.count { it.hits >= 2 }}人／確認中：${people.count { it.hits < 2 }}人"
                     if (!runtime.busy && now - runtime.lastAnalysis >= 200 && failure == null) {
@@ -215,6 +235,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                             val viewMapping = FloatArray(6)
                             frame.transformCoordinates2d(Coordinates2d.IMAGE_PIXELS,
                                 floatArrayOf(0f, 0f, 1f, 0f, 0f, 1f), Coordinates2d.VIEW_NORMALIZED, viewMapping)
+                            var retainedForJpeg = false
                             val task = try {
                                 detector.process(InputImage.fromMediaImage(image, rotation))
                             } catch (exception: Exception) {
@@ -245,6 +266,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                                 corners.maxOf { it[0] }, corners.maxOf { it[1] })
                                         }
                                         val claimed = mutableSetOf<Int>()
+                                        val faceCandidates = mutableListOf<FaceCandidate>()
                                         faces.filter { it.boundingBox.width() >= 35 }.forEach { face ->
                                             val box = face.boundingBox
                                             val uprightWidth = if (rotation % 180 == 0) imageWidth else imageHeight
@@ -293,6 +315,8 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                                     ?.takeIf { now - it.lastSeen < 1200 && distance(it.faceWorld, faceWorld) < 0.7f }
                                                 if (existing != null || people.size < 12) {
                                                     if (existing != null) {
+                                                        if (existing.trackingId != face.trackingId)
+                                                            existing.recognitionKey = java.util.UUID.randomUUID().toString()
                                                         existing.hits = consecutiveHits(existing.hits, now - existing.lastSeen)
                                                         existing.faceWorld = FloatArray(3) {
                                                             existing.faceWorld[it] * 0.10f + faceWorld[it] * 0.90f
@@ -320,7 +344,23 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                                             measured == null, z, faceWorld, side)
                                                         claimed += number
                                                     }
+                                                    val person = existing ?: people.last()
+                                                    if (person.hits >= 2 && face.trackingId != null) {
+                                                        faceCandidates += FaceCandidate(person.recognitionKey, person.number, face.trackingId,
+                                                            paddedFaceCrop(box.left, box.top, box.right, box.bottom,
+                                                                uprightWidth, uprightHeight))
+                                                    }
                                                 }
+                                            }
+                                        }
+                                        pipeline.choose(faceCandidates, android.os.SystemClock.elapsedRealtime())?.let { selected ->
+                                            retainedForJpeg = true
+                                            pipeline.submit(image, rotation, selected, android.os.SystemClock.elapsedRealtime(),
+                                                preferences.getString("base_url", "").orEmpty(),
+                                                preferences.getString("recognition_path", "/recognize").orEmpty()) { key ->
+                                                runtime.active && runtime.resetVersion == epoch &&
+                                                    people.any { it.recognitionKey == key &&
+                                                        android.os.SystemClock.elapsedRealtime() - it.lastSeen < 1200 }
                                             }
                                         }
                                     }
@@ -329,7 +369,8 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                     if (runtime.active) status = "顔検出を再試行中：${it.javaClass.simpleName}"
                                 }
                                 .addOnCompleteListener(executor) {
-                                    image.close(); depth?.close(); runtime.busy = false
+                                    if (!retainedForJpeg) image.close()
+                                    depth?.close(); runtime.busy = false
                                 }
                         } catch (_: com.google.ar.core.exceptions.NotYetAvailableException) {
                             runtime.busy = false
@@ -342,6 +383,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
             }
         )
         val paint = remember { Paint(Paint.ANTI_ALIAS_FLAG) }
+        val profileRenderer = remember { ProfileCardRenderer() }
         Canvas(Modifier.fillMaxSize()) {
             if (showFaceBoxes) {
                 val canvas = drawContext.canvas.nativeCanvas
@@ -363,39 +405,57 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                     val saved = canvas.save()
                     canvas.translate(card.x, card.y)
                     // Scale all text and panel geometry together with perspective.
-                    canvas.scale(card.width / 300f, card.height / 160f)
-                    paint.style = Paint.Style.FILL
-                    // A subtle backdrop keeps text legible against bright scenery, without a border.
-                    paint.clearShadowLayer()
-                    paint.color = android.graphics.Color.argb(85, 0, 0, 0)
-                    canvas.drawRoundRect(-8f, 0f, 300f, 140f, 8f, 8f, paint)
-                    paint.setShadowLayer(2.5f, 0f, 1f, android.graphics.Color.argb(220, 0, 0, 0))
-                    paint.color = android.graphics.Color.rgb(108, 255, 208)
-                    paint.textSize = 20f
-                    canvas.drawText("DEMO PERSON ${card.number}", 0f, 25f, paint)
-                    paint.color = android.graphics.Color.WHITE
-                    paint.textSize = 16f
-                    canvas.drawText("プロフィール接続待ち", 0f, 60f, paint)
-                    val distanceLabel = String.format(java.util.Locale.US, "%.2f m", card.depthMeters)
-                    canvas.drawText("推定 $distanceLabel / ${if (card.estimated) "顔幅" else "Depth"}", 0f, 91f, paint)
-                    canvas.drawText("空間位置に固定・仮データ", 0f, 125f, paint)
-                    paint.clearShadowLayer()
+                    canvas.scale(card.width / 320f, card.height / 180f)
+                    profileRenderer.draw(canvas, profileCardContent(card.number, card.recognition, pipeline.mode),
+                        if (showFaceBoxes) String.format(java.util.Locale.US, "%.2f m · %s", card.depthMeters,
+                            if (card.estimated) "顔幅推定" else "Depth") else null)
                     canvas.restoreToCount(saved)
                 }
             }
         }
-        Column(Modifier.align(Alignment.BottomStart).navigationBarsPadding()
-            .padding(start = 12.dp, end = 12.dp, bottom = 78.dp)
-            .background(Color.Black.copy(alpha = 0.75f)).padding(10.dp)) {
-            Text(failure ?: status, color = Color.White)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = showFaceBoxes, onCheckedChange = { showFaceBoxes = it })
-                Text("検出枠を表示（検出：${if (detectedBoxes.isEmpty()) 0 else detectionCount}個）", color = Color.White)
+        Surface(modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(16.dp).fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+            contentColor = MaterialTheme.colorScheme.onSurface) {
+            Row(Modifier.padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Profile Scouter", style = MaterialTheme.typography.titleMedium)
+                    Text("SPATIAL AR", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary)
+                }
+                TextButton(onClick = { showSettings = true }) { Text("設定") }
             }
-            Text("2回検出で表示・画面端では位置を保持", color = Color(0xFF6CFFD0))
-            Button(onClick = { resetVersion++ }) { Text("空間の仮プロフィールをリセット") }
+        }
+        Surface(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp).fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f),
+            contentColor = MaterialTheme.colorScheme.onSurface) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(if (pipeline.mode == RecognitionMode.OFF) "スタンバイ" else when (pipeline.mode) {
+                        RecognitionMode.PREVIEW -> "切り抜き確認"
+                        RecognitionMode.MOCK -> "デモモード"
+                        else -> "PC認識中"
+                    }, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                    Text("${if (detectedBoxes.isEmpty()) 0 else detectionCount} FACES", style = MaterialTheme.typography.labelMedium)
+                }
+                Text(failure ?: if (pipeline.mode == RecognitionMode.OFF) status else pipeline.status.take(80),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2)
+                FilledTonalButton(onClick = {
+                    if (pipeline.mode == RecognitionMode.OFF) showRecognition = true
+                    else pipeline.changeMode(RecognitionMode.OFF)
+                }, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (pipeline.mode == RecognitionMode.OFF) "認識モードを選ぶ" else "認識を停止")
+                }
+            }
         }
     }
+    if (showRecognition) RecognitionPanel(pipeline, onDismiss = { showRecognition = false })
+    if (showSettings) ScouterSettings(showFaceBoxes, if (detectedBoxes.isEmpty()) 0 else detectionCount,
+        "$status\n${pipeline.status}", onBoxesChanged = { showFaceBoxes = it },
+        onConnection = { showSettings = false; onOpenConnection() },
+        onRecognition = { showSettings = false; showRecognition = true },
+        onReset = { resetVersion++; showSettings = false }, onDismiss = { showSettings = false })
 }
 
 private class SpatialRuntime {

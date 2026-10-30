@@ -1,58 +1,26 @@
 package com.example.profilescouter.ui.theme
 
-import android.app.Activity
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
-)
-
-private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+private val ScouterColors = darkColorScheme(
+    primary = Color(0xFF85E3C4), onPrimary = Color(0xFF00382C),
+    primaryContainer = Color(0xFF174D40), onPrimaryContainer = Color(0xFFBBFBE5),
+    secondary = Color(0xFFB3CEC4), onSecondary = Color(0xFF20372F),
+    background = Color(0xFF0B1210), onBackground = Color(0xFFE1ECE6),
+    surface = Color(0xFF101B17), onSurface = Color(0xFFE1ECE6),
+    surfaceVariant = Color(0xFF25352E), onSurfaceVariant = Color(0xFFB5C8BE),
+    outline = Color(0xFF62796D)
 )
 
 @Composable
-fun ProfileScouterTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
-    content: @Composable () -> Unit
-) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
-
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
-    )
+fun ProfileScouterTheme(content: @Composable () -> Unit) {
+    MaterialTheme(colorScheme = ScouterColors, typography = Typography,
+        shapes = Shapes(small = RoundedCornerShape(12.dp), medium = RoundedCornerShape(20.dp),
+            large = RoundedCornerShape(28.dp)), content = content)
 }

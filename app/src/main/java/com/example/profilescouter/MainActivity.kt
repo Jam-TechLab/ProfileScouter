@@ -55,10 +55,11 @@ private fun ScouterScreen() {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background,
+        contentColor = MaterialTheme.colorScheme.onBackground) {
         Box(Modifier.fillMaxSize()) {
             if (granted) {
-                SpatialScouter(Modifier.fillMaxSize(), snapshot)
+                SpatialScouter(Modifier.fillMaxSize(), snapshot, onOpenConnection = { showConnection = true })
             } else {
                 Column(
                     Modifier.align(Alignment.Center).padding(24.dp),
@@ -76,16 +77,6 @@ private fun ScouterScreen() {
                             Uri.parse("package:${context.packageName}")))
                     }) { Text("アプリの設定を開く") }
                 }
-            }
-            Column(Modifier.align(Alignment.TopStart).statusBarsPadding().padding(20.dp)) {
-                Text("PROFILE SCOUTER", color = Color(0xFF6CFFD0), style = MaterialTheme.typography.titleLarge)
-                Text("空間AR・人物識別は未接続", color = Color.White,
-                    modifier = Modifier.background(Color.Black.copy(alpha = 0.65f)).padding(6.dp))
-            }
-            if (granted) TextButton(onClick = { showConnection = true }, modifier = Modifier
-                .align(Alignment.TopEnd).statusBarsPadding().padding(top = 80.dp, end = 12.dp)
-                .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(8.dp))) {
-                Text("PC接続", color = Color(0xFF6CFFD0))
             }
         }
     }
