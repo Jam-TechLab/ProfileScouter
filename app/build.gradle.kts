@@ -42,10 +42,6 @@ android {
 dependencies {
     implementation("io.github.sceneview:arsceneview:2.3.0")
 
-    implementation("androidx.camera:camera-camera2:1.4.2")
-    implementation("androidx.camera:camera-lifecycle:1.4.2")
-    implementation("androidx.camera:camera-view:1.4.2")
-    implementation("androidx.camera:camera-mlkit-vision:1.4.2")
     implementation("com.google.mlkit:face-detection:16.1.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.2")
 

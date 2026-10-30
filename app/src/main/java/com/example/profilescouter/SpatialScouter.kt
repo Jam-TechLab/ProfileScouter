@@ -51,7 +51,7 @@ private data class ProjectedProfile(
 
 /** Uses ARCore camera frames exclusively; CameraX is disposed before entering this mode. */
 @Composable
-fun SpatialScouter(modifier: Modifier = Modifier) {
+internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnapshot) {
     val context = LocalContext.current
     val hostView = LocalView.current
     val executor = remember(context) { ContextCompat.getMainExecutor(context) }
@@ -69,6 +69,19 @@ fun SpatialScouter(modifier: Modifier = Modifier) {
     var detectedBoxes by remember { mutableStateOf<List<DetectedFaceBox>>(emptyList()) }
     var detectionCount by remember { mutableIntStateOf(0) }
     val runtime = remember { SpatialRuntime() }
+    val captureExecutor = remember { java.util.concurrent.Executors.newSingleThreadExecutor() }
+    DisposableEffect(snapshot) {
+        snapshot.capture = { callback ->
+            runtime.captureRequest?.invoke(Result.failure(IllegalStateException("撮影要求が更新されました")))
+            runtime.captureRequest = callback
+        }
+        onDispose {
+            snapshot.capture = null
+            runtime.captureRequest?.invoke(Result.failure(IllegalStateException("カメラを終了しました")))
+            runtime.captureRequest = null
+            captureExecutor.shutdown()
+        }
+    }
     DisposableEffect(detector) {
         onDispose {
             runtime.active = false
@@ -96,6 +109,27 @@ fun SpatialScouter(modifier: Modifier = Modifier) {
             },
             onSessionPaused = { cards = emptyList(); detectedBoxes = emptyList() },
             onSessionUpdated = { session, frame ->
+                runtime.captureRequest?.let { callback ->
+                    try {
+                        val rotation = cameraImageRotation(context, session.cameraConfig.cameraId, hostView.display?.rotation)
+                        val image = frame.acquireCameraImage()
+                        runtime.captureRequest = null
+                        try {
+                            captureExecutor.execute {
+                                val result = runCatching { image.use { cameraImageToBitmap(it, rotation) } }
+                                executor.execute { callback(result) }
+                            }
+                        } catch (exception: Exception) {
+                            image.close()
+                            callback(Result.failure(exception))
+                        }
+                    } catch (_: com.google.ar.core.exceptions.NotYetAvailableException) {
+                        // Retry on the next AR frame until the caller's timeout.
+                    } catch (exception: Exception) {
+                        runtime.captureRequest = null
+                        callback(Result.failure(exception))
+                    }
+                }
                 if (runtime.resetVersion != resetVersion) {
                     runtime.resetVersion = resetVersion
                     people.forEach { it.anchor?.detach() }
@@ -122,7 +156,7 @@ fun SpatialScouter(modifier: Modifier = Modifier) {
                     val up = camera.displayOrientedPose.rotateVector(floatArrayOf(0f, 1f, 0f))
                     val dt = if (runtime.lastRender == 0L) 16L else (now - runtime.lastRender).coerceIn(1, 100)
                     runtime.lastRender = now
-                    val blend = (1.0 - exp(-dt / 100.0)).toFloat()
+                    val blend = (1.0 - exp(-dt / 55.0)).toFloat()
                     if (now - runtime.lastDetection > 700) detectedBoxes = emptyList()
                     people.filter { isTrackExpired(it.hits, now - it.lastSeen) }
                         .toList().forEach { it.anchor?.detach(); people.remove(it) }
@@ -261,7 +295,7 @@ fun SpatialScouter(modifier: Modifier = Modifier) {
                                                     if (existing != null) {
                                                         existing.hits = consecutiveHits(existing.hits, now - existing.lastSeen)
                                                         existing.faceWorld = FloatArray(3) {
-                                                            existing.faceWorld[it] * 0.25f + faceWorld[it] * 0.75f
+                                                            existing.faceWorld[it] * 0.10f + faceWorld[it] * 0.90f
                                                         }
                                                         if (existing.hits >= 2 && existing.anchor == null) {
                                                             existing.anchor = runCatching {
@@ -311,6 +345,7 @@ fun SpatialScouter(modifier: Modifier = Modifier) {
         Canvas(Modifier.fillMaxSize()) {
             if (showFaceBoxes) {
                 val canvas = drawContext.canvas.nativeCanvas
+                paint.clearShadowLayer()
                 paint.color = android.graphics.Color.rgb(255, 210, 70)
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = 2.dp.toPx()
@@ -329,22 +364,22 @@ fun SpatialScouter(modifier: Modifier = Modifier) {
                     canvas.translate(card.x, card.y)
                     // Scale all text and panel geometry together with perspective.
                     canvas.scale(card.width / 300f, card.height / 160f)
-                    paint.color = android.graphics.Color.argb(225, 12, 35, 30)
                     paint.style = Paint.Style.FILL
-                    canvas.drawRoundRect(0f, 0f, 300f, 160f, 10f, 10f, paint)
+                    // A subtle backdrop keeps text legible against bright scenery, without a border.
+                    paint.clearShadowLayer()
+                    paint.color = android.graphics.Color.argb(85, 0, 0, 0)
+                    canvas.drawRoundRect(-8f, 0f, 300f, 140f, 8f, 8f, paint)
+                    paint.setShadowLayer(2.5f, 0f, 1f, android.graphics.Color.argb(220, 0, 0, 0))
                     paint.color = android.graphics.Color.rgb(108, 255, 208)
-                    paint.style = Paint.Style.STROKE
-                    paint.strokeWidth = 2f
-                    canvas.drawRoundRect(0f, 0f, 300f, 160f, 10f, 10f, paint)
-                    paint.style = Paint.Style.FILL
                     paint.textSize = 20f
-                    canvas.drawText("DEMO PERSON ${card.number}", 14f, 30f, paint)
+                    canvas.drawText("DEMO PERSON ${card.number}", 0f, 25f, paint)
                     paint.color = android.graphics.Color.WHITE
                     paint.textSize = 16f
-                    canvas.drawText("プロフィール接続待ち", 14f, 65f, paint)
+                    canvas.drawText("プロフィール接続待ち", 0f, 60f, paint)
                     val distanceLabel = String.format(java.util.Locale.US, "%.2f m", card.depthMeters)
-                    canvas.drawText("推定 $distanceLabel / ${if (card.estimated) "顔幅" else "Depth"}", 14f, 96f, paint)
-                    canvas.drawText("空間位置に固定・仮データ", 14f, 130f, paint)
+                    canvas.drawText("推定 $distanceLabel / ${if (card.estimated) "顔幅" else "Depth"}", 0f, 91f, paint)
+                    canvas.drawText("空間位置に固定・仮データ", 0f, 125f, paint)
+                    paint.clearShadowLayer()
                     canvas.restoreToCount(saved)
                 }
             }
@@ -364,6 +399,7 @@ fun SpatialScouter(modifier: Modifier = Modifier) {
 }
 
 private class SpatialRuntime {
+    var captureRequest: ((Result<android.graphics.Bitmap>) -> Unit)? = null
     var active = true
     var busy = false
     var lastAnalysis = 0L
