@@ -1,4 +1,14 @@
+/*
+ * カメラ画像の回転に伴う座標変換と、現実空間の点を画面へ投影する計算を担当する。
+ */
 package com.example.profilescouter
+
+internal fun toUprightImage(x: Float, y: Float, width: Int, height: Int, rotation: Int): FloatArray = when (rotation) {
+    90 -> floatArrayOf(height - y, x)
+    180 -> floatArrayOf(width - x, height - y)
+    270 -> floatArrayOf(y, width - x)
+    else -> floatArrayOf(x, y)
+}
 
 /** ML Kit boxes use the upright image; camera intrinsics use the unrotated image. */
 internal fun toRawImage(x: Float, y: Float, width: Int, height: Int, rotation: Int): FloatArray =

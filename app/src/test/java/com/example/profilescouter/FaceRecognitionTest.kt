@@ -1,3 +1,6 @@
+/*
+ * 顔画像の切り抜き、認識応答の検証、認識モード変更時の状態管理を確認する単体テスト。
+ */
 package com.example.profilescouter
 
 import kotlinx.coroutines.CoroutineScope

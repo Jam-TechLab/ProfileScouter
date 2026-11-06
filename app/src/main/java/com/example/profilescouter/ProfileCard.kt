@@ -1,3 +1,6 @@
+/*
+ * 認識結果からプロフィールの表示内容を作り、人物の横に表示するARカードを描画する。
+ */
 package com.example.profilescouter
 
 import android.graphics.Canvas
@@ -23,8 +26,11 @@ internal fun profileCardContent(number: Int, result: FaceRecognitionResult?, mod
     else -> ProfileCardContent("FACE $number", "人物を検出", if (mode == RecognitionMode.OFF) "認識モードを選択してください" else "プロフィールを確認中…", "")
 }
 
-/** Camera-anchored card uses the same dark/mint visual language as the Material settings. */
-internal class ProfileCardRenderer {
+/** Camera-anchored card receives its semantic colors from the Material theme. */
+internal data class ProfileCardStyle(val surface: Int, val onSurface: Int, val secondaryText: Int,
+    val accent: Int, val nameSize: Float, val bodySize: Float, val labelSize: Float)
+
+internal class ProfileCardRenderer(private val style: ProfileCardStyle) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val cache = LruCache<ProfileCardContent, List<StaticLayout>>(32)
     private fun layout(text: String, size: Float, bold: Boolean = false, lines: Int = 1,
@@ -33,7 +39,6 @@ internal class ProfileCardRenderer {
             this.color = color
             textSize = size
             typeface = if (bold) Typeface.create("sans-serif", Typeface.BOLD) else Typeface.create("sans-serif", Typeface.NORMAL)
-            setShadowLayer(2f, 0f, 1f, Color.BLACK)
         }
         return StaticLayout.Builder.obtain(text, 0, text.length, textPaint, 288)
             .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false)
@@ -42,14 +47,14 @@ internal class ProfileCardRenderer {
 
     fun draw(canvas: Canvas, content: ProfileCardContent, debug: String?) {
         val layouts = cache[content] ?: listOf(
-            layout(content.badge, 11f, color = Color.rgb(150, 239, 208)),
-            layout(content.name, 25f, bold = true),
-            layout(content.affiliation, 15f, color = Color.rgb(225, 238, 232)),
-            layout(content.bio, 15f, lines = 2, color = Color.rgb(242, 246, 243))
+            layout(content.badge, style.labelSize, color = style.accent),
+            layout(content.name, style.nameSize, bold = true, color = style.onSurface),
+            layout(content.affiliation, style.bodySize, color = style.secondaryText),
+            layout(content.bio, style.bodySize, lines = 2, color = style.onSurface)
         ).also { cache.put(content, it) }
         paint.clearShadowLayer()
         paint.style = Paint.Style.FILL
-        paint.color = Color.argb(85, 8, 22, 17)
+        paint.color = style.surface
         canvas.drawRoundRect(0f, 0f, 320f, 180f, 16f, 16f, paint)
         val positions = floatArrayOf(12f, 34f, 70f, 96f)
         layouts.forEachIndexed { index, text ->
@@ -59,9 +64,8 @@ internal class ProfileCardRenderer {
             canvas.restoreToCount(saved)
         }
         if (debug != null) {
-            paint.color = Color.rgb(213, 231, 221)
+            paint.color = style.secondaryText
             paint.textSize = 10f
-            paint.setShadowLayer(2f, 0f, 1f, Color.BLACK)
             canvas.drawText(debug, 16f, 165f, paint)
             paint.clearShadowLayer()
         }

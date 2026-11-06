@@ -1,3 +1,6 @@
+/*
+ * 顔画像の切り抜き範囲と送信タイミングを管理し、PCの認識結果を人物ごとに保持する。
+ */
 package com.example.profilescouter
 
 import android.graphics.Bitmap

@@ -1,3 +1,6 @@
+/*
+ * PCから受け取ったプロフィールと未登録の結果が、適切なカード表示内容になるか確認する単体テスト。
+ */
 package com.example.profilescouter
 
 import org.junit.Assert.*

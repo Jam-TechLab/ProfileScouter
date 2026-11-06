@@ -1,3 +1,6 @@
+/*
+ * 認識用HTTP通信のパス・画像送信形式・エラー処理と、接続設定の検証を確認する単体テスト。
+ */
 package com.example.profilescouter
 
 import org.junit.Assert.*

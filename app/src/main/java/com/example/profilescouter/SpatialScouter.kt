@@ -1,29 +1,28 @@
+/*
+ * ARCoreのカメラ映像から顔を検出・追跡し、人物の横の空間座標にプロフィールを表示する中心画面。
+ */
 package com.example.profilescouter
 
 import android.graphics.Paint
 import android.opengl.Matrix
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Button
 import androidx.compose.material3.Text
-import androidx.compose.material3.Switch
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.profilescouter.ui.designsystem.ScouterSpace
 import com.google.ar.core.*
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
@@ -38,7 +37,6 @@ private data class SpatialPerson(
     var trackingId: Int?,
     var anchor: Anchor?,
     var lastSeen: Long,
-    var estimatedDepth: Boolean,
     var depthMeters: Float,
     var faceWorld: FloatArray,
     var cardOffset: FloatArray,
@@ -51,15 +49,18 @@ private data class SpatialPerson(
 private data class DetectedFaceBox(val trackingId: Int?, val left: Float, val top: Float,
     val right: Float, val bottom: Float)
 
+private data class WorldFaceBox(val trackingId: Int?, val corners: List<FloatArray>)
+
 private data class ProjectedProfile(
     val number: Int, val x: Float, val y: Float,
-    val width: Float, val height: Float, val estimated: Boolean, val depthMeters: Float,
+    val width: Float, val height: Float, val depthMeters: Float,
     val recognition: FaceRecognitionResult?
 )
 
 /** ARCore owns the camera; face JPEGs are made from the same frame as detection. */
 @Composable
-internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnapshot, onOpenConnection: () -> Unit) {
+internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnapshot, onOpenConnection: () -> Unit,
+    onOpenProfile: () -> Unit) {
     val context = LocalContext.current
     val hostView = LocalView.current
     val executor = remember(context) { ContextCompat.getMainExecutor(context) }
@@ -81,6 +82,9 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
     val pipeline = remember { FaceRecognitionPipeline(recognitionScope) }
     var showRecognition by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var analysisEnabled by remember { mutableStateOf(true) }
+    val currentAnalysis = rememberUpdatedState(analysisEnabled)
+    var performance by remember { mutableStateOf("計測中") }
     val preferences = remember(context) { context.getSharedPreferences("server_connection", 0) }
     val captureExecutor = remember { java.util.concurrent.Executors.newSingleThreadExecutor() }
     DisposableEffect(snapshot) {
@@ -112,19 +116,36 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
         ARScene(
             modifier = Modifier.fillMaxSize(),
             planeRenderer = false,
-            sessionConfiguration = { session, config ->
+            sessionConfiguration = { _, config ->
                 // Rendering must not wait for the next camera exposure.
                 config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                 config.lightEstimationMode = Config.LightEstimationMode.DISABLED
                 config.planeFindingMode = Config.PlaneFindingMode.DISABLED
-                config.depthMode = if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC))
-                    Config.DepthMode.AUTOMATIC else Config.DepthMode.DISABLED
+                config.depthMode = Config.DepthMode.DISABLED
+            },
+            onViewCreated = {
+                // Keep the camera stream's color/tone conversion enabled.
+                view.isPostProcessingEnabled = true
+                view.antiAliasing = com.google.android.filament.View.AntiAliasing.NONE
             },
             onSessionFailed = {
                 failure = "空間ARを開始できませんでした。ARCore対応端末とGoogle Play開発者サービス（AR）を確認してください。\n${it.javaClass.simpleName}"
             },
-            onSessionPaused = { cards = emptyList(); detectedBoxes = emptyList(); pipeline.reset() },
+            onSessionPaused = { cards = emptyList(); detectedBoxes = emptyList(); runtime.worldBoxes = emptyList(); pipeline.reset() },
             onSessionUpdated = { session, frame ->
+                val tick = android.os.SystemClock.elapsedRealtime()
+                if (runtime.metricsStart == 0L) runtime.metricsStart = tick
+                runtime.renderFrames++
+                if (frame.timestamp != runtime.lastCameraTimestamp) {
+                    runtime.cameraFrames++
+                    runtime.lastCameraTimestamp = frame.timestamp
+                }
+                if (tick - runtime.metricsStart >= 1000) {
+                    val seconds = (tick - runtime.metricsStart) / 1000f
+                    performance = "AR %.0f fps / カメラ更新 %.0f fps".format(
+                        runtime.renderFrames / seconds, runtime.cameraFrames / seconds)
+                    runtime.metricsStart = tick; runtime.renderFrames = 0; runtime.cameraFrames = 0
+                }
                 runtime.captureRequest?.let { callback ->
                     try {
                         val rotation = cameraImageRotation(context, session.cameraConfig.cameraId, hostView.display?.rotation)
@@ -156,6 +177,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                     cards = emptyList()
                     detectedBoxes = emptyList()
                     detectionCount = 0
+                    runtime.worldBoxes = emptyList()
                     pipeline.reset()
                 }
                 val camera = frame.camera
@@ -177,7 +199,17 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                     val dt = if (runtime.lastRender == 0L) 16L else (now - runtime.lastRender).coerceIn(1, 100)
                     runtime.lastRender = now
                     val blend = (1.0 - exp(-dt / 55.0)).toFloat()
-                    if (now - runtime.lastDetection > 700) detectedBoxes = emptyList()
+                    // Reproject diagnostic boxes every frame, just like the AR cards.
+                    // Face inference remains throttled; camera movement needs no new inference.
+                    detectedBoxes = if (now - runtime.lastDetection > 700) emptyList() else
+                        runtime.worldBoxes.mapNotNull { box ->
+                            val points = box.corners.map { project(it, vp, viewportWidth, viewportHeight) }
+                            if (points.any { it == null }) null else {
+                                val valid = points.filterNotNull()
+                                DetectedFaceBox(box.trackingId, valid.minOf { it[0] }, valid.minOf { it[1] },
+                                    valid.maxOf { it[0] }, valid.maxOf { it[1] })
+                            }
+                        }
                     people.filter { isTrackExpired(it.hits, now - it.lastSeen) }
                         .toList().forEach { it.anchor?.detach(); people.remove(it) }
                     // Anchors stay in world space, including while their cards are off-screen.
@@ -197,11 +229,11 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                 vp, viewportWidth, viewportHeight)
                             if (origin == null || corner == null) null
                             else ProjectedProfile(person.number, origin[0], origin[1],
-                                abs(corner[0] - origin[0]), abs(corner[1] - origin[1]), person.estimatedDepth,
+                                abs(corner[0] - origin[0]), abs(corner[1] - origin[1]),
                                 person.depthMeters, pipeline.results[person.recognitionKey])
                         }
                     status = "追跡中：${people.count { it.hits >= 2 }}人／確認中：${people.count { it.hits < 2 }}人"
-                    if (!runtime.busy && now - runtime.lastAnalysis >= 200 && failure == null) {
+                    if (analysisEnabled && !runtime.busy && now - runtime.lastAnalysis >= 200 && failure == null) {
                         try {
                             val image = frame.acquireCameraImage()
                             runtime.busy = true
@@ -226,12 +258,6 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                             val imageWidth = image.width
                             val imageHeight = image.height
                             val epoch = resetVersion
-                            // Capture depth and its image-to-texture mapping with the same frame.
-                            // Keep only the depth image; sample nine pixels per face, never copy the full map.
-                            val depth = if (now - runtime.lastDepth >= 500) {
-                                runtime.lastDepth = now
-                                captureDepth(frame)
-                            } else null
                             val viewMapping = FloatArray(6)
                             frame.transformCoordinates2d(Coordinates2d.IMAGE_PIXELS,
                                 floatArrayOf(0f, 0f, 1f, 0f, 0f, 1f), Coordinates2d.VIEW_NORMALIZED, viewMapping)
@@ -240,15 +266,19 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                 detector.process(InputImage.fromMediaImage(image, rotation))
                             } catch (exception: Exception) {
                                 image.close()
-                                depth?.close()
                                 throw exception
                             }
                             task
                                 .addOnSuccessListener(executor) { faces ->
-                                    if (runtime.active && runtime.resetVersion == epoch) {
+                                    if (runtime.active && currentAnalysis.value && runtime.resetVersion == epoch) {
                                         runtime.lastDetection = android.os.SystemClock.elapsedRealtime()
-                                        detectionCount = faces.size
-                                        detectedBoxes = faces.map { face ->
+                                        val indices = uniqueFaceIndices(faces.map {
+                                            val b = it.boundingBox
+                                            FaceRectangle(b.left.toFloat(), b.top.toFloat(), b.right.toFloat(), b.bottom.toFloat())
+                                        }, faces.map { it.trackingId })
+                                        val uniqueFaces = indices.map { faces[it] }
+                                        detectionCount = uniqueFaces.size
+                                        detectedBoxes = uniqueFaces.map { face ->
                                             val b = face.boundingBox
                                             val corners = listOf(
                                                 toRawImage(b.left.toFloat(), b.top.toFloat(), imageWidth, imageHeight, rotation),
@@ -267,7 +297,8 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                         }
                                         val claimed = mutableSetOf<Int>()
                                         val faceCandidates = mutableListOf<FaceCandidate>()
-                                        faces.filter { it.boundingBox.width() >= 35 }.forEach { face ->
+                                        val nextWorldBoxes = mutableListOf<WorldFaceBox>()
+                                        uniqueFaces.filter { it.boundingBox.width() >= 35 }.forEach { face ->
                                             val box = face.boundingBox
                                             val uprightWidth = if (rotation % 180 == 0) imageWidth else imageHeight
                                             val uprightHeight = if (rotation % 180 == 0) imageHeight else imageWidth
@@ -280,42 +311,66 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                                 imageWidth, imageHeight, rotation)
                                             val x = raw[0]
                                             val y = raw[1]
-                                            // Fallback assumes an approximately 16 cm wide face.
+                                            // Distance assumes an approximately 16 cm wide face.
                                             val faceFocal = if (rotation % 180 == 0) focal[0] else focal[1]
                                             val approximate = faceFocal * 0.16f / box.width()
-                                            // Reject depth readings likely to be background behind the face.
-                                            val measured = depth?.metersAt(x, y)
-                                                ?.takeIf { it in approximate * 0.55f..approximate * 1.65f }
                                             val prior = people.firstOrNull {
                                                 canReuseTrackingId(it.trackingId, face.trackingId, now - it.lastSeen)
                                             }
-                                            val z = measured ?: prior?.let {
-                                                if (!it.estimatedDepth) it.depthMeters
-                                                else it.depthMeters * 0.7f + approximate * 0.3f
-                                            } ?: approximate
+                                            val z = prior?.let { it.depthMeters * 0.7f + approximate * 0.3f } ?: approximate
                                             if (z in 0.25f..8f) {
+                                                val worldCorners = listOf(
+                                                    box.left.toFloat() to box.top.toFloat(),
+                                                    box.right.toFloat() to box.top.toFloat(),
+                                                    box.left.toFloat() to box.bottom.toFloat(),
+                                                    box.right.toFloat() to box.bottom.toFloat()
+                                                ).map { (bx, by) ->
+                                                    val rawCorner = toRawImage(bx, by, imageWidth, imageHeight, rotation)
+                                                    pose.transformPoint(floatArrayOf(
+                                                        (rawCorner[0] - principal[0]) * z / focal[0],
+                                                        -(rawCorner[1] - principal[1]) * z / focal[1], -z))
+                                                }
+                                                nextWorldBoxes += WorldFaceBox(face.trackingId, worldCorners)
                                                 val local = floatArrayOf(
                                                     (x - principal[0]) * z / focal[0],
                                                     -(y - principal[1]) * z / focal[1], -z)
                                                 val faceWorld = pose.transformPoint(local)
                                                 // Align the panel's top-left with the detected face's top-right.
-                                                // Use the same depth as the face, plus only a 1 cm horizontal gap.
+                                                // Use the same distance as the face, plus a 4 cm horizontal gap.
                                                 val edgeRaw = toRawImage(box.right.toFloat(), box.top.toFloat(),
                                                     imageWidth, imageHeight, rotation)
                                                 val edgeWorld = pose.transformPoint(floatArrayOf(
                                                     (edgeRaw[0] - principal[0]) * z / focal[0],
                                                     -(edgeRaw[1] - principal[1]) * z / focal[1], -z))
-                                                val gap = screenPose.rotateVector(floatArrayOf(0.01f, 0f, 0f))
+                                                val gap = screenPose.rotateVector(floatArrayOf(0.04f, 0f, 0f))
                                                 val side = FloatArray(3) { edgeWorld[it] - faceWorld[it] + gap[it] }
                                                 val available = people.filter { it.number !in claimed }
+                                                val screenMatches = available.filter { now - it.lastSeen < 1000 }
+                                                    .mapNotNull { candidate ->
+                                                        val world = candidate.anchor?.let { anchor ->
+                                                            candidate.targetLocal?.let { anchor.pose.transformPoint(it) }
+                                                        } ?: candidate.faceWorld
+                                                        val localPosition = pose.inverse().transformPoint(world)
+                                                        if (localPosition[2] >= -0.1f) return@mapNotNull null
+                                                        val rawX = focal[0] * localPosition[0] / -localPosition[2] + principal[0]
+                                                        val rawY = principal[1] - focal[1] * localPosition[1] / -localPosition[2]
+                                                        val upright = toUprightImage(rawX, rawY, imageWidth, imageHeight, rotation)
+                                                        val cost = faceAssociationCost(upright[0], upright[1],
+                                                            FaceRectangle(box.left.toFloat(), box.top.toFloat(), box.right.toFloat(), box.bottom.toFloat()))
+                                                        candidate to cost
+                                                    }.filter { it.second <= 0.64f }.sortedBy { it.second }
+                                                val screenMatch = screenMatches.firstOrNull()?.takeIf {
+                                                    screenMatches.size == 1 || screenMatches[1].second - it.second > 0.15f
+                                                }?.first
                                                 // Identity within a continuous track takes priority over noisy depth.
                                                 val existing = available.firstOrNull {
                                                     canReuseTrackingId(it.trackingId, face.trackingId, now - it.lastSeen)
-                                                } ?: available.minByOrNull { distance(it.faceWorld, faceWorld) }
+                                                } ?: screenMatch ?: available.minByOrNull { distance(it.faceWorld, faceWorld) }
                                                     ?.takeIf { now - it.lastSeen < 1200 && distance(it.faceWorld, faceWorld) < 0.7f }
                                                 if (existing != null || people.size < 12) {
                                                     if (existing != null) {
-                                                        if (existing.trackingId != face.trackingId)
+                                                        // A short, unambiguous continuous screen track keeps its app ID.
+                                                        if (existing.trackingId != face.trackingId && existing !== screenMatch)
                                                             existing.recognitionKey = java.util.UUID.randomUUID().toString()
                                                         existing.hits = consecutiveHits(existing.hits, now - existing.lastSeen)
                                                         existing.faceWorld = FloatArray(3) {
@@ -333,15 +388,18 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                                         // Preserve the world-space side selected at acquisition.
                                                         // Recomputing it from the turning phone pulls cards across the scene.
                                                         existing.trackingId = face.trackingId
+                                                        // Refresh actual face-edge geometry while visible, then retain it off-screen.
+                                                        existing.cardOffset = FloatArray(3) {
+                                                            existing.cardOffset[it] * 0.7f + side[it] * 0.3f
+                                                        }
                                                         existing.lastSeen = now
-                                                        existing.estimatedDepth = measured == null && (prior?.estimatedDepth ?: true)
                                                         existing.depthMeters = z
                                                         claimed += existing.number
                                                     } else {
                                                         val number = runtime.nextNumber++
                                                         // A single detection never creates a visible card or anchor.
                                                         people += SpatialPerson(number, face.trackingId, null, now,
-                                                            measured == null, z, faceWorld, side)
+                                                            z, faceWorld, side)
                                                         claimed += number
                                                     }
                                                     val person = existing ?: people.last()
@@ -353,6 +411,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                                 }
                                             }
                                         }
+                                        runtime.worldBoxes = nextWorldBoxes
                                         pipeline.choose(faceCandidates, android.os.SystemClock.elapsedRealtime())?.let { selected ->
                                             retainedForJpeg = true
                                             pipeline.submit(image, rotation, selected, android.os.SystemClock.elapsedRealtime(),
@@ -370,7 +429,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                 }
                                 .addOnCompleteListener(executor) {
                                     if (!retainedForJpeg) image.close()
-                                    depth?.close(); runtime.busy = false
+                                    runtime.busy = false
                                 }
                         } catch (_: com.google.ar.core.exceptions.NotYetAvailableException) {
                             runtime.busy = false
@@ -383,12 +442,17 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
             }
         )
         val paint = remember { Paint(Paint.ANTI_ALIAS_FLAG) }
-        val profileRenderer = remember { ProfileCardRenderer() }
+        val palette = MaterialTheme.colorScheme
+        val type = MaterialTheme.typography
+        val profileStyle = ProfileCardStyle(palette.surface.copy(alpha = 0.88f).toArgb(),
+            palette.onSurface.toArgb(), palette.onSurfaceVariant.toArgb(), palette.primary.toArgb(),
+            type.headlineSmall.fontSize.value, type.bodyMedium.fontSize.value, type.labelSmall.fontSize.value)
+        val profileRenderer = remember(profileStyle) { ProfileCardRenderer(profileStyle) }
         Canvas(Modifier.fillMaxSize()) {
             if (showFaceBoxes) {
                 val canvas = drawContext.canvas.nativeCanvas
                 paint.clearShadowLayer()
-                paint.color = android.graphics.Color.rgb(255, 210, 70)
+                paint.color = palette.secondary.toArgb()
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = 2.dp.toPx()
                 detectedBoxes.forEach { box ->
@@ -407,36 +471,36 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                     // Scale all text and panel geometry together with perspective.
                     canvas.scale(card.width / 320f, card.height / 180f)
                     profileRenderer.draw(canvas, profileCardContent(card.number, card.recognition, pipeline.mode),
-                        if (showFaceBoxes) String.format(java.util.Locale.US, "%.2f m · %s", card.depthMeters,
-                            if (card.estimated) "顔幅推定" else "Depth") else null)
+                        if (showFaceBoxes) String.format(java.util.Locale.US, "%.2f m · 顔幅推定", card.depthMeters) else null)
                     canvas.restoreToCount(saved)
                 }
             }
         }
-        Surface(modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(16.dp).fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+        Surface(modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(ScouterSpace.md).fillMaxWidth(),
+            shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
             contentColor = MaterialTheme.colorScheme.onSurface) {
             Row(Modifier.padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Profile Scouter", style = MaterialTheme.typography.titleMedium)
-                    Text("SPATIAL AR", style = MaterialTheme.typography.labelSmall,
+                    Text("プロフィールを、そばに。", style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary)
                 }
                 TextButton(onClick = { showSettings = true }) { Text("設定") }
             }
         }
-        Surface(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp).fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f),
+        Surface(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(ScouterSpace.md).fillMaxWidth(),
+            shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f),
             contentColor = MaterialTheme.colorScheme.onSurface) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.padding(ScouterSpace.md), verticalArrangement = Arrangement.spacedBy(ScouterSpace.sm)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(if (pipeline.mode == RecognitionMode.OFF) "スタンバイ" else when (pipeline.mode) {
                         RecognitionMode.PREVIEW -> "切り抜き確認"
                         RecognitionMode.MOCK -> "デモモード"
                         else -> "PC認識中"
                     }, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-                    Text("${if (detectedBoxes.isEmpty()) 0 else detectionCount} FACES", style = MaterialTheme.typography.labelMedium)
+                    Text("${if (detectedBoxes.isEmpty()) 0 else detectionCount}人を検出", style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Text(failure ?: if (pipeline.mode == RecognitionMode.OFF) status else pipeline.status.take(80),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -452,13 +516,25 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
     }
     if (showRecognition) RecognitionPanel(pipeline, onDismiss = { showRecognition = false })
     if (showSettings) ScouterSettings(showFaceBoxes, if (detectedBoxes.isEmpty()) 0 else detectionCount,
-        "$status\n${pipeline.status}", onBoxesChanged = { showFaceBoxes = it },
+        "$status\n${pipeline.status}\n$performance\n※fpsは表示遅延そのものの計測値ではありません。",
+        analysisEnabled = analysisEnabled,
+        onAnalysisChanged = {
+            analysisEnabled = it
+            if (!it) { pipeline.changeMode(RecognitionMode.OFF); detectedBoxes = emptyList() }
+        },
+        onBoxesChanged = { showFaceBoxes = it },
         onConnection = { showSettings = false; onOpenConnection() },
+        onProfile = { showSettings = false; onOpenProfile() },
         onRecognition = { showSettings = false; showRecognition = true },
         onReset = { resetVersion++; showSettings = false }, onDismiss = { showSettings = false })
 }
 
 private class SpatialRuntime {
+    var metricsStart = 0L
+    var renderFrames = 0
+    var cameraFrames = 0
+    var lastCameraTimestamp = 0L
+    var worldBoxes: List<WorldFaceBox> = emptyList()
     var captureRequest: ((Result<android.graphics.Bitmap>) -> Unit)? = null
     var active = true
     var busy = false
@@ -468,7 +544,6 @@ private class SpatialRuntime {
     var sensorOrientation: Int? = null
     var lastRender = 0L
     var lastDetection = 0L
-    var lastDepth = 0L
     val viewMatrix = FloatArray(16)
     val projectionMatrix = FloatArray(16)
     val viewProjectionMatrix = FloatArray(16)
@@ -476,37 +551,3 @@ private class SpatialRuntime {
 
 private fun distance(a: FloatArray, b: FloatArray): Float =
     sqrt(a.indices.sumOf { ((a[it] - b[it]) * (a[it] - b[it])).toDouble() }).toFloat()
-
-private class DepthSnapshot(private val image: android.media.Image, val uv: FloatArray) : AutoCloseable {
-    private val width = image.width
-    private val height = image.height
-    private val plane = image.planes[0]
-    private val buffer = plane.buffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
-    override fun close() { image.close() }
-    fun metersAt(x: Float, y: Float): Float? {
-        val u = uv[0] + (uv[2] - uv[0]) * x + (uv[4] - uv[0]) * y
-        val v = uv[1] + (uv[3] - uv[1]) * x + (uv[5] - uv[1]) * y
-        if (u !in 0f..0.9999f || v !in 0f..0.9999f) return null
-        val cx = (u * width).toInt()
-        val cy = (v * height).toInt()
-        val samples = mutableListOf<Int>()
-        for (dy in -1..1) for (dx in -1..1) {
-            val px = cx + dx; val py = cy + dy
-            if (px in 0 until width && py in 0 until height) {
-                val mm = buffer.getShort(py * plane.rowStride + px * plane.pixelStride).toInt() and 0xffff
-                if (mm in 250..8000) samples += mm
-            }
-        }
-        return samples.sorted().let { if (it.size < 3) null else it[it.size / 2] / 1000f }
-    }
-}
-
-private fun captureDepth(frame: Frame): DepthSnapshot? = try {
-    val image = frame.acquireDepthImage16Bits()
-    try {
-        val uv = FloatArray(6)
-        frame.transformCoordinates2d(Coordinates2d.IMAGE_PIXELS,
-            floatArrayOf(0f, 0f, 1f, 0f, 0f, 1f), Coordinates2d.TEXTURE_NORMALIZED, uv)
-        DepthSnapshot(image, uv)
-    } catch (exception: Exception) { image.close(); throw exception }
-} catch (_: Exception) { null }

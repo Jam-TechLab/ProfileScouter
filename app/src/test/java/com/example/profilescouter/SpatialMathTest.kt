@@ -1,3 +1,6 @@
+/*
+ * 画像座標の回転、空間座標の投影、画面外・カメラ背後の扱いと遠近感を確認する単体テスト。
+ */
 package com.example.profilescouter
 
 import org.junit.Assert.*

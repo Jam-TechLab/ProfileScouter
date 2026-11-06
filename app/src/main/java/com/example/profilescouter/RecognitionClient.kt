@@ -1,3 +1,6 @@
+/*
+ * 認識用PCへの接続確認と顔画像のHTTP送信、接続先アドレスとパスの検証を担当する。
+ */
 package com.example.profilescouter
 
 import java.net.HttpURLConnection

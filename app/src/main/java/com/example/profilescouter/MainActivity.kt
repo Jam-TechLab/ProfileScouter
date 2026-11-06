@@ -1,3 +1,6 @@
+/*
+ * アプリの起動、カメラ権限の確認、AR・接続設定・プロフィール登録の画面切り替えを担当する。
+ */
 package com.example.profilescouter
 
 import android.Manifest
@@ -10,15 +13,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -45,6 +45,11 @@ private fun ScouterScreen() {
     var requested by rememberSaveable { mutableStateOf(false) }
     val snapshot = remember { CameraSnapshot() }
     var showConnection by remember { mutableStateOf(false) }
+    var showProfile by rememberSaveable { mutableStateOf(false) }
+    if (showProfile) {
+        OwnProfileScreen(onClose = { showProfile = false })
+        return
+    }
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted = it }
@@ -59,15 +64,17 @@ private fun ScouterScreen() {
         contentColor = MaterialTheme.colorScheme.onBackground) {
         Box(Modifier.fillMaxSize()) {
             if (granted) {
-                SpatialScouter(Modifier.fillMaxSize(), snapshot, onOpenConnection = { showConnection = true })
+                SpatialScouter(Modifier.fillMaxSize(), snapshot, onOpenConnection = { showConnection = true },
+                    onOpenProfile = { showProfile = true })
             } else {
                 Column(
                     Modifier.align(Alignment.Center).padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Text("カメラへのアクセス", color = Color.White, style = MaterialTheme.typography.titleLarge)
-                    Text("スカウターの映像表示にカメラを使用します。", color = Color.White)
+                    Text("カメラへのアクセス", style = MaterialTheme.typography.titleLarge)
+                    Text("スカウターの映像表示にカメラを使用します。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = { showProfile = true }) { Text("マイプロフィールを登録") }
                     Button(onClick = {
                         requested = true
                         launcher.launch(Manifest.permission.CAMERA)

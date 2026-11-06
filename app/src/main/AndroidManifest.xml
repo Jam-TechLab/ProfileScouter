@@ -19,6 +19,13 @@
         android:theme="@style/Theme.ProfileScouter"
         tools:targetApi="31">
         <meta-data android:name="com.google.ar.core" android:value="optional" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.profilephotos"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/profile_photo_paths" />
+        </provider>
         <activity
             android:name=".MainActivity"
             android:exported="true"

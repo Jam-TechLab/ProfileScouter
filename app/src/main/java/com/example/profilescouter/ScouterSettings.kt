@@ -1,41 +1,44 @@
+/*
+ * 顔の検出枠などの表示設定と、接続・認識・登録画面への入口、詳細な動作確認をまとめる画面。
+ */
 package com.example.profilescouter
 
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.*
+import com.example.profilescouter.ui.designsystem.*
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ScouterSettings(showBoxes: Boolean, detectionCount: Int, status: String,
-    onBoxesChanged: (Boolean) -> Unit, onConnection: () -> Unit, onRecognition: () -> Unit,
+    analysisEnabled: Boolean, onAnalysisChanged: (Boolean) -> Unit,
+    onBoxesChanged: (Boolean) -> Unit, onConnection: () -> Unit, onRecognition: () -> Unit, onProfile: () -> Unit,
     onReset: () -> Unit, onDismiss: () -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp).padding(bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("スカウター設定", style = MaterialTheme.typography.headlineSmall)
-            Text("接続と表示を調整", style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            FilledTonalButton(onClick = onConnection, modifier = Modifier.fillMaxWidth()) { Text("PC接続・通信テスト") }
-            FilledTonalButton(onClick = onRecognition, modifier = Modifier.fillMaxWidth()) { Text("顔JPEG・認識モード") }
+    var diagnostics by remember { mutableStateOf(false) }
+    var confirmReset by remember { mutableStateOf(false) }
+    ScouterSheet("設定", "見る・つながる・自分の情報を整える", onDismiss) {
+        ScouterSection("接続とプロフィール") {
+            ScouterAction("PCに接続", "認識に使うPCのアドレスを設定", onConnection)
             HorizontalDivider()
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween) {
-                Column(Modifier.weight(1f)) {
-                    Text("顔の検出枠", style = MaterialTheme.typography.titleMedium)
-                    Text("検出 ${detectionCount}個・追跡IDを表示", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Switch(checked = showBoxes, onCheckedChange = onBoxesChanged)
+            ScouterAction("認識モード", "PCで認識する・デモで試す", onRecognition)
+            HorizontalDivider()
+            ScouterAction("プロフィール登録", "3方向の顔写真とプロフィールをPCへ登録", onProfile)
+        }
+        ScouterSection("表示") {
+            ScouterSwitch("顔の枠を表示", "現在 ${detectionCount}人を検出", showBoxes, onBoxesChanged)
+        }
+        TextButton(onClick = { diagnostics = !diagnostics }) {
+            Text(if (diagnostics) "詳細設定を閉じる" else "詳細設定・動作確認")
+        }
+        if (diagnostics) {
+            ScouterSection("動作確認") {
+                ScouterSwitch("顔の解析", "一時停止して映像を確認できます", analysisEnabled, onAnalysisChanged)
             }
-            Text(status, style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            OutlinedButton(onClick = onReset, modifier = Modifier.fillMaxWidth()) { Text("表示位置と認識結果をリセット") }
+            ScouterNotice(status)
+            TextButton(onClick = { confirmReset = true }) { Text("表示位置と認識結果をリセット") }
         }
     }
+    if (confirmReset) AlertDialog(onDismissRequest = { confirmReset = false },
+        title = { Text("表示をリセットしますか？") },
+        text = { Text("現在の顔の追跡と認識結果を消し、検出し直します。保存したプロフィールは残ります。") },
+        confirmButton = { TextButton(onClick = { confirmReset = false; onReset() }) { Text("リセット") } },
+        dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("キャンセル") } })
 }

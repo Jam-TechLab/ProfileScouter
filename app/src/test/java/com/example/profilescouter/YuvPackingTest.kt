@@ -1,3 +1,6 @@
+/*
+ * カメラ画像の行間や画素間隔が異なる場合も、YUVデータを正しく並べ替えられるか確認する単体テスト。
+ */
 package com.example.profilescouter
 
 import java.nio.ByteBuffer
