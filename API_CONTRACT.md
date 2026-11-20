@@ -195,3 +195,13 @@ HTTP 200、`Content-Type: application/json`。以下のキーは必須。
 仮応答は実際の識別ではなく、`[仮] テスト人物 N`と表示される。
 
 PCが準備できたら「PC接続」でベースURLを保存・接続確認し、「顔JPEG・認識設定」から「PCへ自動送信を開始」を選ぶ。
+
+## 会話連携の人物IDと音声API（2026-11-20）
+
+簡易認識応答に、DBの実人物IDである任意の正の整数 `person_id` を追加できる。
+例：`{"person_id":123,"displayName":"登録した人","affiliation":"所属","bio":"最新会話の要約"}`。
+従来の3項目だけでも表示できるが、IDがない場合は録音と遭遇一覧への追加を開始しない。
+録音者のIDは送信せず、対象人物IDで会話を紐付ける。
+
+音声は同じベースURLの `POST /conversations`、履歴は `GET /persons/{person_id}/conversations`。
+詳細は [CONVERSATIONS.md](CONVERSATIONS.md) とPC担当向けREADMEを参照。

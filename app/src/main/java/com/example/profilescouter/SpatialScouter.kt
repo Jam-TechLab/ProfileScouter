@@ -60,7 +60,7 @@ private data class ProjectedProfile(
 /** ARCore owns the camera; face JPEGs are made from the same frame as detection. */
 @Composable
 internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnapshot, onOpenConnection: () -> Unit,
-    onOpenProfile: () -> Unit) {
+    onOpenProfile: () -> Unit, conversations: ConversationViewModel) {
     val context = LocalContext.current
     val hostView = LocalView.current
     val executor = remember(context) { ContextCompat.getMainExecutor(context) }
@@ -82,10 +82,17 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
     val pipeline = remember { FaceRecognitionPipeline(recognitionScope) }
     var showRecognition by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showConversations by remember { mutableStateOf(false) }
     var analysisEnabled by remember { mutableStateOf(true) }
     val currentAnalysis = rememberUpdatedState(analysisEnabled)
     var performance by remember { mutableStateOf("計測中") }
     val preferences = remember(context) { context.getSharedPreferences("server_connection", 0) }
+    LaunchedEffect(conversations.latestSummaries.toMap()) {
+        val server = runCatching { normalizeServerUrl(preferences.getString("base_url", "").orEmpty()) }.getOrNull()
+        conversations.latestSummaries.forEach { (key, entry) ->
+            if (key == "$server|${entry.personId}") pipeline.updateConversationSummary(entry.personId, entry.summary)
+        }
+    }
     val captureExecutor = remember { java.util.concurrent.Executors.newSingleThreadExecutor() }
     DisposableEffect(snapshot) {
         snapshot.capture = { callback ->
@@ -104,6 +111,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
     }
     DisposableEffect(detector) {
         onDispose {
+            conversations.foregroundEnded()
             runtime.active = false
             people.forEach { it.anchor?.detach() }
             people.clear()
@@ -131,7 +139,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
             onSessionFailed = {
                 failure = "空間ARを開始できませんでした。ARCore対応端末とGoogle Play開発者サービス（AR）を確認してください。\n${it.javaClass.simpleName}"
             },
-            onSessionPaused = { cards = emptyList(); detectedBoxes = emptyList(); runtime.worldBoxes = emptyList(); pipeline.reset() },
+            onSessionPaused = { conversations.foregroundEnded(); cards = emptyList(); detectedBoxes = emptyList(); runtime.worldBoxes = emptyList(); pipeline.reset() },
             onSessionUpdated = { session, frame ->
                 val tick = android.os.SystemClock.elapsedRealtime()
                 if (runtime.metricsStart == 0L) runtime.metricsStart = tick
@@ -412,6 +420,11 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                             }
                                         }
                                         runtime.worldBoxes = nextWorldBoxes
+                                        val visibleProfiles = faceCandidates.mapNotNull { candidate ->
+                                            pipeline.results[candidate.key]?.takeIf { it.matched && !it.mock }?.profile
+                                        }
+                                        conversations.observe(visibleProfiles, uniqueFaces.size,
+                                            preferences.getString("base_url", "").orEmpty(), pipeline.mode == RecognitionMode.LIVE)
                                         pipeline.choose(faceCandidates, android.os.SystemClock.elapsedRealtime())?.let { selected ->
                                             retainedForJpeg = true
                                             pipeline.submit(image, rotation, selected, android.os.SystemClock.elapsedRealtime(),
@@ -486,6 +499,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                     Text("プロフィールを、そばに。", style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary)
                 }
+                TextButton(onClick = { showConversations = true }) { Text("会話・履歴") }
                 TextButton(onClick = { showSettings = true }) { Text("設定") }
             }
         }
@@ -505,28 +519,36 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                 Text(failure ?: if (pipeline.mode == RecognitionMode.OFF) status else pipeline.status.take(80),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2)
+                if (conversations.enabled || conversations.uploadStatus.isNotBlank()) {
+                    Text(conversations.status, style = MaterialTheme.typography.bodySmall,
+                        color = if (conversations.recordingName != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                    if (conversations.recordingName != null) TextButton(onClick = { conversations.disable() }) { Text("録音を終了・送信") }
+                }
                 FilledTonalButton(onClick = {
                     if (pipeline.mode == RecognitionMode.OFF) showRecognition = true
-                    else pipeline.changeMode(RecognitionMode.OFF)
+                    else { conversations.disable(); pipeline.changeMode(RecognitionMode.OFF) }
                 }, modifier = Modifier.fillMaxWidth()) {
                     Text(if (pipeline.mode == RecognitionMode.OFF) "認識モードを選ぶ" else "認識を停止")
                 }
             }
         }
     }
+    if (showConversations) ConversationScreen(conversations, pipeline.mode == RecognitionMode.LIVE,
+        onDismiss = { showConversations = false })
     if (showRecognition) RecognitionPanel(pipeline, onDismiss = { showRecognition = false })
     if (showSettings) ScouterSettings(showFaceBoxes, if (detectedBoxes.isEmpty()) 0 else detectionCount,
         "$status\n${pipeline.status}\n$performance\n※fpsは表示遅延そのものの計測値ではありません。",
         analysisEnabled = analysisEnabled,
         onAnalysisChanged = {
             analysisEnabled = it
-            if (!it) { pipeline.changeMode(RecognitionMode.OFF); detectedBoxes = emptyList() }
+            if (!it) { conversations.disable(); pipeline.changeMode(RecognitionMode.OFF); detectedBoxes = emptyList() }
         },
         onBoxesChanged = { showFaceBoxes = it },
         onConnection = { showSettings = false; onOpenConnection() },
         onProfile = { showSettings = false; onOpenProfile() },
         onRecognition = { showSettings = false; showRecognition = true },
-        onReset = { resetVersion++; showSettings = false }, onDismiss = { showSettings = false })
+        onConversations = { showSettings = false; showConversations = true },
+        onReset = { conversations.disable(); resetVersion++; showSettings = false }, onDismiss = { showSettings = false })
 }
 
 private class SpatialRuntime {

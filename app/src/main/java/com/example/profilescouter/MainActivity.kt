@@ -23,6 +23,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.profilescouter.ui.theme.ProfileScouterTheme
@@ -30,12 +31,13 @@ import com.example.profilescouter.ui.theme.ProfileScouterTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { ProfileScouterTheme { ScouterScreen() } }
+        val conversations = ViewModelProvider(this)[ConversationViewModel::class.java]
+        setContent { ProfileScouterTheme { ScouterScreen(conversations) } }
     }
 }
 
 @Composable
-private fun ScouterScreen() {
+private fun ScouterScreen(conversations: ConversationViewModel) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     fun permissionGranted() = ContextCompat.checkSelfPermission(
@@ -56,6 +58,7 @@ private fun ScouterScreen() {
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) granted = permissionGranted()
+            if (event == Lifecycle.Event.ON_STOP) conversations.foregroundEnded()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -65,7 +68,7 @@ private fun ScouterScreen() {
         Box(Modifier.fillMaxSize()) {
             if (granted) {
                 SpatialScouter(Modifier.fillMaxSize(), snapshot, onOpenConnection = { showConnection = true },
-                    onOpenProfile = { showProfile = true })
+                    onOpenProfile = { showProfile = true }, conversations = conversations)
             } else {
                 Column(
                     Modifier.align(Alignment.Center).padding(24.dp),

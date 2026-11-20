@@ -37,3 +37,8 @@ Kotlin / Jetpack Compose / Material 3 / ARCore / ML Kitを使用。
 - Depthは使用せず、顔幅から距離を概算する。
 
 実機のカメラ・AR・PCとの結合は、ビルドや単体テストとは別に確認する。
+
+## 会話録音・共有履歴
+
+人物認識をきっかけに録音し、相手の会話履歴をPCへ追加する。録音者の本人識別は不要。
+設定・操作・実装の入口・実機確認の範囲は [CONVERSATIONS.md](CONVERSATIONS.md) を参照。

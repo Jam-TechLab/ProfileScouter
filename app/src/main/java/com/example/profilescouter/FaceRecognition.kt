@@ -42,8 +42,13 @@ internal fun parseFaceResponse(raw: String, packet: FacePacket): FaceRecognition
         }
         val name = json.getString("displayName")
         require(name.isNotBlank()) { "displayNameは空にできません" }
-        // No registered user ID or similarity was supplied; do not invent either.
-        return FaceRecognitionResult(true, null, PersonProfile("", name,
+        // A real DB ID is optional for old servers; never use a name or track ID as identity.
+        val personId = if (json.has("person_id")) {
+            val value = json.get("person_id").toString()
+            require(registeredPersonId(value) != null) { "person_idは正の整数で返してください" }
+            value
+        } else ""
+        return FaceRecognitionResult(true, null, PersonProfile(personId, name,
             json.getString("affiliation"), json.getString("bio")), simpleProfile = true)
     }
     require(listOf("schemaVersion", "requestId", "trackId", "matched", "userId", "similarity", "profile")
@@ -93,6 +98,14 @@ internal class FaceRecognitionPipeline(private val scope: CoroutineScope) {
     }
 
     fun reset() { changeMode(mode) }
+
+    fun updateConversationSummary(personId: Long, summary: String) {
+        results.entries.toList().forEach { (key, result) ->
+            if (registeredPersonId(result.profile?.userId.orEmpty()) == personId) {
+                results[key] = result.copy(profile = result.profile!!.copy(bio = summary))
+            }
+        }
+    }
 
     fun choose(candidates: List<FaceCandidate>, now: Long): FaceCandidate? {
         if (mode == RecognitionMode.OFF || busy || now - lastStarted < 1000) return null

@@ -11,7 +11,7 @@ import com.example.profilescouter.ui.designsystem.*
 internal fun ScouterSettings(showBoxes: Boolean, detectionCount: Int, status: String,
     analysisEnabled: Boolean, onAnalysisChanged: (Boolean) -> Unit,
     onBoxesChanged: (Boolean) -> Unit, onConnection: () -> Unit, onRecognition: () -> Unit, onProfile: () -> Unit,
-    onReset: () -> Unit, onDismiss: () -> Unit) {
+    onConversations: () -> Unit, onReset: () -> Unit, onDismiss: () -> Unit) {
     var diagnostics by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
     ScouterSheet("設定", "見る・つながる・自分の情報を整える", onDismiss) {
@@ -21,6 +21,8 @@ internal fun ScouterSettings(showBoxes: Boolean, detectionCount: Int, status: St
             ScouterAction("認識モード", "PCで認識する・デモで試す", onRecognition)
             HorizontalDivider()
             ScouterAction("プロフィール登録", "3方向の顔写真とプロフィールをPCへ登録", onProfile)
+            HorizontalDivider()
+            ScouterAction("会話と履歴", "録音・送信待ち・会った人の共有会話履歴", onConversations)
         }
         ScouterSection("表示") {
             ScouterSwitch("顔の枠を表示", "現在 ${detectionCount}人を検出", showBoxes, onBoxesChanged)
