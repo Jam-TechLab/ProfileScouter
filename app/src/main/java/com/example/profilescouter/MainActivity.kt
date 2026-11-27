@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,6 +49,12 @@ private fun ScouterScreen(conversations: ConversationViewModel) {
     val snapshot = remember { CameraSnapshot() }
     var showConnection by remember { mutableStateOf(false) }
     var showProfile by rememberSaveable { mutableStateOf(false) }
+    var showConversations by rememberSaveable { mutableStateOf(false) }
+    if (showConversations) {
+        BackHandler { showConversations = false }
+        ConversationScreen(conversations, onDismiss = { showConversations = false })
+        return
+    }
     if (showProfile) {
         OwnProfileScreen(onClose = { showProfile = false })
         return
@@ -68,7 +75,8 @@ private fun ScouterScreen(conversations: ConversationViewModel) {
         Box(Modifier.fillMaxSize()) {
             if (granted) {
                 SpatialScouter(Modifier.fillMaxSize(), snapshot, onOpenConnection = { showConnection = true },
-                    onOpenProfile = { showProfile = true }, conversations = conversations)
+                    onOpenProfile = { showProfile = true }, onOpenConversations = { showConversations = true },
+                    conversations = conversations)
             } else {
                 Column(
                     Modifier.align(Alignment.Center).padding(24.dp),

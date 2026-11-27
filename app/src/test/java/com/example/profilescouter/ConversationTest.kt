@@ -12,6 +12,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ConversationTest {
+    @Test fun longerGraceKeepsOneConversationButNeverMergesDifferentPeople() {
+        val p = ConversationPolicy(graceMs = 120_000, maxMs = 600_000)
+        p.observe(setOf(7), 1, 0)
+        assertEquals(RecordingDecision.None, p.tick(90_000))
+        assertEquals(RecordingDecision.None, p.observe(setOf(7), 1, 100_000))
+        assertEquals(RecordingDecision.None, p.tick(219_999))
+        assertTrue(p.tick(220_000) is RecordingDecision.Finish)
+        p.observe(setOf(7), 1, 230_000)
+        assertTrue(p.observe(setOf(8), 1, 230_001) is RecordingDecision.Finish)
+    }
     @Test fun briefLossAndReacquisitionKeepTheSameRecording() {
         val p = ConversationPolicy(10_000, 300_000)
         assertEquals(RecordingDecision.Start(7), p.observe(setOf(7), 1, 0))
@@ -45,13 +55,13 @@ class ConversationTest {
         assertNull(registeredPersonId("-1"))
     }
     @Test fun simpleResponseCanCarryARealPersonIdAndOldResponseStillDisplays() {
-        val packet = FacePacket("r", "t", 1, byteArrayOf(1), 1, FaceCrop(0, 0, 10, 10))
+        val packet = FacePacket("r", "t")
         val json = JSONObject().put("displayName", "Test").put("affiliation", "Group").put("bio", "Summary")
         assertEquals("", parseFaceResponse(json.toString(), packet).profile!!.userId)
         json.put("person_id", 7)
         val result = parseFaceResponse(json.toString(), packet)
         assertEquals("7", result.profile!!.userId)
-        assertEquals("Summary", profileCardContent(1, result, RecognitionMode.LIVE).bio)
+        assertEquals("Summary", profileCardContent(1, result, true).bio)
         json.put("person_id", 1.5)
         try { parseFaceResponse(json.toString(), packet); fail("Fractional ID accepted") }
         catch (_: IllegalArgumentException) { }
@@ -63,8 +73,9 @@ class ConversationTest {
         val server = ServerSocket(0).apply { soTimeout = 5000 }
         val executor = Executors.newSingleThreadExecutor()
         var body = ""
+        val requests = mutableListOf<String>()
         val serving = executor.submit {
-            repeat(3) {
+            repeat(5) {
                 server.accept().use { socket ->
                     socket.soTimeout = 5000
                     val input = socket.getInputStream().buffered()
@@ -77,6 +88,7 @@ class ConversationTest {
                         }
                     }
                     val request = line()
+                    requests.add(request)
                     val headers = mutableListOf<String>()
                     while (true) { val value = line(); if (value.isEmpty()) break; headers += value }
                     if (request.startsWith("POST")) {
@@ -109,15 +121,21 @@ class ConversationTest {
             val base = "http://127.0.0.1:${server.localPort}"
             val client = ConversationClient(base)
             val p = PendingConversation(id, 7, "Test", base, 1000, 2000)
-            assertEquals("Test summary", client.upload(p, audio).summary)
+            var sent = false
+            assertEquals("Test summary", client.upload(p, audio) { sent = true }.summary)
+            assertTrue(sent)
             assertTrue(body.contains("name=\"person_id\"\r\n\r\n7\r\n"))
             assertTrue(body.contains("name=\"conversation_id\"\r\n\r\n$id\r\n"))
             assertTrue(body.contains("name=\"audio\"; filename=\"conversation.m4a\""))
             assertFalse(body.contains("recorder_id"))
             assertEquals(id, client.history(7).entries.single().id)
+            assertEquals(id, client.findResult(p)!!.id)
+            assertNull(client.findResult(p.copy(id = "7e1b4192-60f0-4ac8-9df3-626cc978195e")))
             try { client.upload(p.copy(personId = 8), audio); fail("Wrong person response accepted") }
             catch (_: IllegalArgumentException) { }
             serving.get(5, TimeUnit.SECONDS)
+            assertEquals(2, requests.count { it.startsWith("POST") })
+            assertEquals(3, requests.count { it.startsWith("GET") })
         } finally { server.close(); executor.shutdownNow(); audio.delete() }
     }
 }

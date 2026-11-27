@@ -23,14 +23,11 @@ internal fun paddedFaceCrop(left: Int, top: Int, right: Int, bottom: Int, width:
         ceil(right + padX).toInt().coerceIn(1, width), ceil(bottom + padY).toInt().coerceIn(1, height))
 }
 
-internal data class FaceCandidate(val key: String, val number: Int, val trackingId: Int?,
-    val crop: FaceCrop)
-internal data class FacePacket(val requestId: String, val trackId: String, val capturedAtMs: Long,
-    val jpeg: ByteArray, val number: Int, val crop: FaceCrop)
+internal data class FaceCandidate(val key: String, val number: Int, val crop: FaceCrop)
+internal data class FacePacket(val requestId: String, val trackId: String)
 internal data class PersonProfile(val userId: String, val displayName: String, val affiliation: String, val bio: String)
 internal data class FaceRecognitionResult(val matched: Boolean, val similarity: Double?,
-    val profile: PersonProfile?, val mock: Boolean = false, val simpleProfile: Boolean = false)
-internal enum class RecognitionMode { OFF, PREVIEW, MOCK, LIVE }
+    val profile: PersonProfile?, val simpleProfile: Boolean = false)
 
 internal fun parseFaceResponse(raw: String, packet: FacePacket): FaceRecognitionResult {
     val json = JSONObject(raw)
@@ -73,31 +70,25 @@ internal fun parseFaceResponse(raw: String, packet: FacePacket): FaceRecognition
 }
 
 /** All state and admission checks run on the main thread; image work and HTTP run off it. */
-internal class FaceRecognitionPipeline(private val scope: CoroutineScope) {
-    var mode by mutableStateOf(RecognitionMode.OFF); private set
-    var status by mutableStateOf("顔の送信は停止中"); private set
-    var latest by mutableStateOf<FacePacket?>(null); private set
+internal class FaceRecognitionPipeline(private val scope: CoroutineScope,
+    private val onRecognizedFace: (String, PersonProfile, ByteArray) -> Unit = { _, _, _ -> }) {
+    var enabled by mutableStateOf(true); private set
+    var status by mutableStateOf("PC認識：顔の検出待ち"); private set
     val results = mutableStateMapOf<String, FaceRecognitionResult>()
     private val attempts = mutableMapOf<String, Long>()
     private var epoch = 0
     private var busy = false
     private var lastStarted = -1000L
 
-    fun changeMode(value: RecognitionMode) {
+    fun setRunning(value: Boolean) {
         epoch++
-        mode = value
+        enabled = value
         attempts.clear()
         results.clear()
-        latest = null
-        status = when (value) {
-            RecognitionMode.OFF -> "顔の送信は停止中"
-            RecognitionMode.PREVIEW -> "切り抜き確認中（外部送信なし）"
-            RecognitionMode.MOCK -> "仮応答モード（外部送信なし）"
-            RecognitionMode.LIVE -> "PC送信モード：顔の検出待ち"
-        }
+        status = if (value) "PC認識：顔の検出待ち" else "PC認識は停止中"
     }
 
-    fun reset() { changeMode(mode) }
+    fun reset() { setRunning(enabled) }
 
     fun updateConversationSummary(personId: Long, summary: String) {
         results.entries.toList().forEach { (key, result) ->
@@ -108,13 +99,12 @@ internal class FaceRecognitionPipeline(private val scope: CoroutineScope) {
     }
 
     fun choose(candidates: List<FaceCandidate>, now: Long): FaceCandidate? {
-        if (mode == RecognitionMode.OFF || busy || now - lastStarted < 1000) return null
+        if (!enabled || busy || now - lastStarted < 1000) return null
         // Limit in-memory history even when many temporary tracking IDs are created.
         attempts.entries.removeAll { now - it.value > 60_000 }
         results.keys.retainAll(attempts.keys)
         return candidates.filter { candidate ->
-            val wait = if (mode == RecognitionMode.PREVIEW) 1000L
-                else if (results[candidate.key]?.matched == true) 10_000L else 3000L
+            val wait = if (results[candidate.key]?.matched == true) 10_000L else 3000L
             now - (attempts[candidate.key] ?: -10_000L) >= wait
         }.minByOrNull { attempts[it.key] ?: -10_000L }
     }
@@ -127,7 +117,6 @@ internal class FaceRecognitionPipeline(private val scope: CoroutineScope) {
         lastStarted = now
         attempts[candidate.key] = now
         val generation = epoch
-        val selectedMode = mode
         val timestamp = System.currentTimeMillis()
         val requestId = UUID.randomUUID().toString()
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -143,36 +132,25 @@ internal class FaceRecognitionPipeline(private val scope: CoroutineScope) {
                         } finally { full.recycle() }
                     }
                 } finally { image.close() }
-                if (!isCurrentGeneration(generation, selectedMode) || !isCurrent(candidate.key)) return@launch
-                val packet = FacePacket(requestId, candidate.key, timestamp, jpeg, candidate.number, candidate.crop)
-                latest = packet
-                if (selectedMode == RecognitionMode.PREVIEW) {
-                    status = "顔${candidate.number}を切り抜き：${jpeg.size / 1024} KB（送信なし）"
-                    return@launch
-                }
-                status = if (selectedMode == RecognitionMode.MOCK) "仮応答を処理中…" else "顔${candidate.number}をPCへ送信中…"
-                val raw = if (selectedMode == RecognitionMode.MOCK) {
-                    delay(250)
-                    JSONObject().put("schemaVersion", 1).put("requestId", requestId).put("trackId", candidate.key)
-                        .put("matched", true).put("userId", "demo_${candidate.number}").put("similarity", 0.95)
-                        .put("profile", JSONObject().put("displayName", "テスト人物 ${candidate.number}")
-                            .put("affiliation", "仮データ・人物識別なし").put("bio", "JPEGと応答の対応確認"))
-                        .toString()
-                } else withContext(Dispatchers.IO) {
+                if (!isCurrentGeneration(generation) || !isCurrent(candidate.key)) return@launch
+                val packet = FacePacket(requestId, candidate.key)
+                status = "顔${candidate.number}をPCへ送信中…"
+                val raw = withContext(Dispatchers.IO) {
                     RecognitionClient(baseUrl, recognitionPath = recognitionPath).recognize(jpeg, requestId, packet.trackId, timestamp, "face_crop")
                 }
-                val response = parseFaceResponse(raw, packet).copy(mock = selectedMode == RecognitionMode.MOCK)
-                if (isCurrentGeneration(generation, selectedMode) && isCurrent(candidate.key)) {
+                val response = parseFaceResponse(raw, packet)
+                if (isCurrentGeneration(generation) && isCurrent(candidate.key)) {
                     results[candidate.key] = response
+                    response.profile?.takeIf { response.matched }?.let { onRecognizedFace(baseUrl, it, jpeg) }
                     status = if (response.matched) "顔${candidate.number}：${response.profile!!.displayName}"
                         else "顔${candidate.number}：未登録"
-                } else if (isCurrentGeneration(generation, selectedMode)) status = "古い顔への応答を破棄しました"
+                } else if (isCurrentGeneration(generation)) status = "古い顔への応答を破棄しました"
             } catch (exception: CancellationException) { throw exception }
             catch (exception: Exception) {
-                if (isCurrentGeneration(generation, selectedMode)) status = "認識エラー：${exception.message ?: exception.javaClass.simpleName}"
+                if (isCurrentGeneration(generation)) status = "認識エラー：${exception.message ?: exception.javaClass.simpleName}"
             } finally { busy = false }
         }
     }
 
-    private fun isCurrentGeneration(generation: Int, selected: RecognitionMode) = epoch == generation && mode == selected
+    private fun isCurrentGeneration(generation: Int) = epoch == generation && enabled
 }

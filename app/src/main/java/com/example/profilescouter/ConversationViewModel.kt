@@ -24,7 +24,16 @@ internal class ConversationViewModel(application: Application) : AndroidViewMode
     var status by mutableStateOf("会話録音は停止中"); private set
     var recordingName by mutableStateOf<String?>(null); private set
     var uploadStatus by mutableStateOf(""); private set
-    var graceSeconds by mutableIntStateOf(preferences.getInt("grace", 10)); private set
+    var cameraUploadStatus by mutableStateOf(""); private set
+    private var cameraNoticeJob: Job? = null
+    var recordingSeconds by mutableIntStateOf(0); private set
+    var uploadingId by mutableStateOf<String?>(null); private set
+    var checkingId by mutableStateOf<String?>(null); private set
+    var avatarRevision by mutableIntStateOf(0); private set
+    private val savingAvatars = mutableSetOf<String>()
+    val avatarErrors = mutableStateMapOf<String, String>()
+    var lastRecording by mutableStateOf(""); private set
+    var graceSeconds by mutableIntStateOf(preferences.getInt("grace_v2", 30)); private set
     var maxMinutes by mutableIntStateOf(preferences.getInt("max", 5)); private set
     val encounters = mutableStateListOf<Encounter>().apply { addAll(store.encounters()) }
     val pending = mutableStateListOf<PendingConversation>().apply { addAll(store.pending()) }
@@ -43,10 +52,11 @@ internal class ConversationViewModel(application: Application) : AndroidViewMode
 
     init {
         // A retry is user initiated after app restart: never upload old audio silently.
-        pending.replaceAll { it.copy(error = it.error ?: "前回の送信結果を確認できません。再送できます") }
+        pending.replaceAll { it.copy(error = it.error ?: "前回の処理結果を確認できません。PCで処理中の場合があります") }
         viewModelScope.launch {
             while (isActive) {
                 delay(250)
+                if (recorder != null) recordingSeconds = ((SystemClock.elapsedRealtime() - activeElapsed) / 1000).toInt()
                 if (enabled) handle(policy.tick(SystemClock.elapsedRealtime()), emptyList())
             }
         }
@@ -54,9 +64,29 @@ internal class ConversationViewModel(application: Application) : AndroidViewMode
 
     fun configure(grace: Int, minutes: Int) {
         if (recorder != null) return
-        graceSeconds = grace.coerceIn(3, 30); maxMinutes = minutes.coerceIn(1, 10)
+        graceSeconds = grace.coerceIn(10, 120); maxMinutes = minutes.coerceIn(1, 10)
         policy.graceMs = graceSeconds * 1000L; policy.maxMs = maxMinutes * 60_000L
-        preferences.edit().putInt("grace", graceSeconds).putInt("max", maxMinutes).apply()
+        preferences.edit().putInt("grace_v2", graceSeconds).putInt("max", maxMinutes).apply()
+    }
+
+    fun avatar(person: Encounter) = store.avatar(person.server, person.personId)
+
+    fun cacheFace(server: String, profile: PersonProfile, jpeg: ByteArray) {
+        val id = registeredPersonId(profile.userId) ?: return
+        val normalized = runCatching { normalizeServerUrl(server) }.getOrNull() ?: return
+        val key = "$normalized|$id"
+        if (store.avatar(normalized, id).isFile || !savingAvatars.add(key)) return
+        avatarErrors.remove(key)
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    store.saveAvatar(normalized, id, jpeg)
+                }
+                avatarRevision++
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { avatarErrors[key] = error.message ?: "顔写真を保存できませんでした" }
+            finally { savingAvatars.remove(key) }
+        }
     }
 
     fun arm() {
@@ -129,6 +159,7 @@ internal class ConversationViewModel(application: Application) : AndroidViewMode
             active = PendingConversation(id, registeredPersonId(profile.userId)!!, profile.displayName,
                 serverForObservation, System.currentTimeMillis(), 0)
             activeElapsed = SystemClock.elapsedRealtime()
+            recordingSeconds = 0
             recordingName = profile.displayName; status = "${profile.displayName}との会話を録音中"
         } catch (_: Exception) {
             next?.release(); audio.delete(); policy.reset(); enabled = false
@@ -143,6 +174,7 @@ internal class ConversationViewModel(application: Application) : AndroidViewMode
         val saved = try { current.stop(); true } catch (_: RuntimeException) { false }
         finally { current.release() }
         val duration = SystemClock.elapsedRealtime() - activeElapsed
+        lastRecording = "${metadata.name} · ID ${metadata.personId} · ${duration / 1000}秒\n$reason"
         if (!saved || duration < 1000 || store.audio(metadata.id).length() == 0L) {
             store.audio(metadata.id).delete(); status = "短すぎる録音は送信せず終了しました"; return
         }
@@ -151,14 +183,30 @@ internal class ConversationViewModel(application: Application) : AndroidViewMode
         status = "$reason。音声を送信します"; uploadWaiting()
     }
 
-    fun retry(id: String) {
+    fun retry(id: String, allowUnconfirmed: Boolean = false) {
         val index = pending.indexOfFirst { it.id == id }
-        if (index >= 0) { pending[index] = pending[index].copy(error = null); persist(); uploadWaiting() }
+        if (checkingId == id) return
+        if (index >= 0 && pending[index].error != null &&
+            (!pending[index].awaitingResult || allowUnconfirmed)) {
+            pending[index] = pending[index].copy(error = null)
+            if (persist()) uploadWaiting()
+        }
     }
+
+    fun audioDetails(item: PendingConversation): String {
+        val kb = store.audio(item.id).length() / 1024
+        return "ID ${item.personId} · ${(item.endedAt - item.startedAt) / 1000}秒 · $kb KB"
+    }
+
+    val recordingLabel: String get() = active?.let {
+        "${it.name}との会話を録音中 · %d:%02d".format(recordingSeconds / 60, recordingSeconds % 60)
+    } ?: status
+
+    val recordingPersonId: Long? get() = active?.personId
 
     fun discard(id: String) {
         // Another recording may still be uploading; only this item's state matters.
-        if (pending.firstOrNull { it.id == id }?.error == null) return
+        if (checkingId == id || pending.firstOrNull { it.id == id }?.error == null) return
         pending.removeAll { it.id == id }; persist(); store.audio(id).delete()
     }
 
@@ -174,27 +222,84 @@ internal class ConversationViewModel(application: Application) : AndroidViewMode
         uploader = viewModelScope.launch {
             while (isActive) {
                 val item = pending.firstOrNull { it.error == null } ?: break
-                uploadStatus = "${item.name}の音声を処理中（PCで数分かかる場合があります）"
+                uploadingId = item.id
+                showCameraNotice("音声を送信中")
+                // Persist before starting HTTP: a lost response does not mean the PC rejected the audio.
+                val index = pending.indexOfFirst { it.id == item.id }
+                pending[index] = item.copy(awaitingResult = true)
+                if (!persist()) { uploadingId = null; break }
+                uploadStatus = "${item.name}の音声を送信中"
                 try {
                     val latest = withContext(Dispatchers.IO) {
                         val client = ConversationClient(item.server)
-                        client.upload(item, store.audio(item.id))
+                        val uploaded = client.upload(item, store.audio(item.id)) {
+                            viewModelScope.launch {
+                                if (uploadingId == item.id) {
+                                    uploadStatus = "${item.name}の処理結果待ち · 5分以上かかる場合があります（再送不要）"
+                                    showCameraNotice("送信完了", temporary = true)
+                                }
+                            }
+                        }
                         // A late retry may be older than another phone's recording.
                         // Display the shared latest record, not necessarily this upload.
-                        runCatching { client.history(item.personId).entries.firstOrNull() }.getOrNull()
+                        runCatching { client.history(item.personId).entries.firstOrNull() }.getOrNull() ?: uploaded
                     }
                     val key = "${item.server}|${item.personId}"
-                    if (latest != null && (latestSummaries[key]?.endedAt ?: 0) <= latest.endedAt) latestSummaries[key] = latest
+                    if ((latestSummaries[key]?.endedAt ?: 0) <= latest.endedAt) latestSummaries[key] = latest
                     pending.removeAll { it.id == item.id }
                     if (persist()) store.audio(item.id).delete()
-                    uploadStatus = "${item.name}の会話を保存しました"
+                    uploadStatus = "${item.name}の要約を受信しました · 履歴から確認できます"
                 } catch (error: CancellationException) { throw error }
                 catch (error: Exception) {
                     val index = pending.indexOfFirst { it.id == item.id }
-                    if (index >= 0) pending[index] = item.copy(error = error.message ?: "送信できませんでした")
-                    persist(); uploadStatus = "送信待ちに残しました。「会話と履歴」から再送できます"
-                }
+                    if (index >= 0) pending[index] = item.copy(awaitingResult = item.awaitingResult || error !is AudioNotSentException,
+                        error = error.message ?: "PCの処理結果を確認できませんでした")
+                    persist()
+                    uploadStatus = if (error is AudioNotSentException && !item.awaitingResult)
+                        "PCへ接続できませんでした · 音声は端末に保存しています"
+                    else "結果未確認 · PCで処理が続いている場合があります。「結果を確認」を使ってください"
+                    showCameraNotice(if (error is AudioNotSentException) "PCへ接続できませんでした" else "送信結果は会話と履歴で確認できます", temporary = true)
+                } finally { uploadingId = null }
             }
+        }
+    }
+
+    private fun showCameraNotice(message: String, temporary: Boolean = false) {
+        cameraNoticeJob?.cancel()
+        cameraUploadStatus = message
+        if (temporary) cameraNoticeJob = viewModelScope.launch {
+            delay(3000)
+            cameraUploadStatus = ""
+        }
+    }
+
+    fun checkResult(id: String) {
+        if (checkingId != null) return
+        val item = pending.firstOrNull { it.id == id && it.error != null } ?: return
+        checkingId = id
+        viewModelScope.launch {
+            try {
+                val entry = withContext(Dispatchers.IO) { ConversationClient(item.server).findResult(item) }
+                if (entry == null) {
+                    val index = pending.indexOfFirst { it.id == id }
+                    if (index >= 0) pending[index] = item.copy(awaitingResult = true,
+                        error = "履歴に結果はまだありません。処理中か失敗したかは、この応答だけでは判断できません。PC側の状態を確認してください")
+                    persist()
+                    uploadStatus = "結果はまだ確認できません · 音声は再送していません"
+                } else {
+                    val key = "${item.server}|${item.personId}"
+                    if ((latestSummaries[key]?.endedAt ?: 0) <= entry.endedAt) latestSummaries[key] = entry
+                    pending.removeAll { it.id == id }
+                    if (persist()) store.audio(id).delete()
+                    uploadStatus = "${item.name}の保存済み要約を確認しました · 再送していません"
+                }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                val index = pending.indexOfFirst { it.id == id }
+                if (index >= 0) pending[index] = item.copy(awaitingResult = true,
+                    error = "結果の確認に失敗：${error.message ?: error.javaClass.simpleName}")
+                persist(); uploadStatus = "結果を確認できませんでした · 音声は再送していません"
+            } finally { checkingId = null }
         }
     }
 
@@ -209,6 +314,7 @@ internal class ConversationViewModel(application: Application) : AndroidViewMode
                 val page = withContext(Dispatchers.IO) { ConversationClient(person.server).history(person.personId, before) }
                 if (historyKey == person.key) {
                     historyEntries = (if (more) historyEntries + page.entries else page.entries).distinctBy { it.id }
+                        .sortedWith(compareByDescending<ConversationEntry> { it.endedAt }.thenByDescending { it.id })
                     historyNext = page.next
                 }
             } catch (error: CancellationException) { throw error }

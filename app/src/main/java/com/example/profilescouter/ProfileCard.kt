@@ -15,15 +15,14 @@ import android.util.LruCache
 
 internal data class ProfileCardContent(val badge: String, val name: String, val affiliation: String, val bio: String)
 
-internal fun profileCardContent(number: Int, result: FaceRecognitionResult?, mode: RecognitionMode): ProfileCardContent = when {
+internal fun profileCardContent(number: Int, result: FaceRecognitionResult?, enabled: Boolean): ProfileCardContent = when {
     result?.matched == true -> ProfileCardContent(when {
-        result.mock -> "DEMO · 仮データ"
         result.simpleProfile -> "PROFILE · 受信済み"
         else -> "MATCHED · 照合一致"
     },
         result.profile!!.displayName, result.profile.affiliation, result.profile.bio)
     result != null -> ProfileCardContent("UNKNOWN", "未登録の人物", "一致する登録情報がありません", "")
-    else -> ProfileCardContent("FACE $number", "人物を検出", if (mode == RecognitionMode.OFF) "認識モードを選択してください" else "プロフィールを確認中…", "")
+    else -> ProfileCardContent("FACE $number", "人物を検出", if (enabled) "プロフィールを確認中…" else "PC認識は停止中", "")
 }
 
 /** Camera-anchored card receives its semantic colors from the Material theme. */
@@ -50,7 +49,7 @@ internal class ProfileCardRenderer(private val style: ProfileCardStyle) {
             layout(content.badge, style.labelSize, color = style.accent),
             layout(content.name, style.nameSize, bold = true, color = style.onSurface),
             layout(content.affiliation, style.bodySize, color = style.secondaryText),
-            layout(content.bio, style.bodySize, lines = 2, color = style.onSurface)
+            layout(content.bio, style.bodySize, lines = 3, color = style.onSurface)
         ).also { cache.put(content, it) }
         paint.clearShadowLayer()
         paint.style = Paint.Style.FILL
@@ -63,10 +62,10 @@ internal class ProfileCardRenderer(private val style: ProfileCardStyle) {
             text.draw(canvas)
             canvas.restoreToCount(saved)
         }
-        if (debug != null) {
+        if (debug != null || content.bio.isNotBlank()) {
             paint.color = style.secondaryText
             paint.textSize = 10f
-            canvas.drawText(debug, 16f, 165f, paint)
+            canvas.drawText(listOfNotNull(debug, if (content.bio.isNotBlank()) "タップして全文" else null).joinToString(" · "), 16f, 165f, paint)
             paint.clearShadowLayer()
         }
     }

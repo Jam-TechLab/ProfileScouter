@@ -3,18 +3,26 @@
  */
 package com.example.profilescouter
 
+import android.Manifest
 import android.graphics.Paint
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.opengl.Matrix
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.nativeCanvas
@@ -60,7 +68,7 @@ private data class ProjectedProfile(
 /** ARCore owns the camera; face JPEGs are made from the same frame as detection. */
 @Composable
 internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnapshot, onOpenConnection: () -> Unit,
-    onOpenProfile: () -> Unit, conversations: ConversationViewModel) {
+    onOpenProfile: () -> Unit, onOpenConversations: () -> Unit, conversations: ConversationViewModel) {
     val context = LocalContext.current
     val hostView = LocalView.current
     val executor = remember(context) { ContextCompat.getMainExecutor(context) }
@@ -71,6 +79,8 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
     }
     val people = remember { mutableListOf<SpatialPerson>() }
     var cards by remember { mutableStateOf<List<ProjectedProfile>>(emptyList()) }
+    val currentCards = rememberUpdatedState(cards)
+    var expandedProfile by remember { mutableStateOf<PersonProfile?>(null) }
     var status by remember { mutableStateOf("端末をゆっくり動かして周囲を認識してください") }
     var failure by remember { mutableStateOf<String?>(null) }
     var resetVersion by remember { mutableIntStateOf(0) }
@@ -79,14 +89,34 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
     var detectionCount by remember { mutableIntStateOf(0) }
     val runtime = remember { SpatialRuntime() }
     val recognitionScope = rememberCoroutineScope()
-    val pipeline = remember { FaceRecognitionPipeline(recognitionScope) }
-    var showRecognition by remember { mutableStateOf(false) }
+    val pipeline = remember { FaceRecognitionPipeline(recognitionScope, conversations::cacheFace) }
+    val microphonePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) conversations.arm()
+    }
     var showSettings by remember { mutableStateOf(false) }
-    var showConversations by remember { mutableStateOf(false) }
     var analysisEnabled by remember { mutableStateOf(true) }
     val currentAnalysis = rememberUpdatedState(analysisEnabled)
     var performance by remember { mutableStateOf("計測中") }
     val preferences = remember(context) { context.getSharedPreferences("server_connection", 0) }
+    var connectionRevision by remember { mutableIntStateOf(0) }
+    val connectionReady = remember(connectionRevision) {
+        runCatching {
+            normalizeServerUrl(preferences.getString("base_url", "").orEmpty())
+            normalizeEndpointPath(preferences.getString("recognition_path", "/recognize").orEmpty())
+        }.isSuccess
+    }
+    DisposableEffect(preferences, pipeline) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "base_url" || key == "recognition_path") {
+                conversations.disable()
+                pipeline.reset()
+                expandedProfile = null
+                connectionRevision++
+            }
+        }
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
     LaunchedEffect(conversations.latestSummaries.toMap()) {
         val server = runCatching { normalizeServerUrl(preferences.getString("base_url", "").orEmpty()) }.getOrNull()
         conversations.latestSummaries.forEach { (key, entry) ->
@@ -412,7 +442,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                                     }
                                                     val person = existing ?: people.last()
                                                     if (person.hits >= 2 && face.trackingId != null) {
-                                                        faceCandidates += FaceCandidate(person.recognitionKey, person.number, face.trackingId,
+                                                        faceCandidates += FaceCandidate(person.recognitionKey, person.number,
                                                             paddedFaceCrop(box.left, box.top, box.right, box.bottom,
                                                                 uprightWidth, uprightHeight))
                                                     }
@@ -421,11 +451,15 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                                         }
                                         runtime.worldBoxes = nextWorldBoxes
                                         val visibleProfiles = faceCandidates.mapNotNull { candidate ->
-                                            pipeline.results[candidate.key]?.takeIf { it.matched && !it.mock }?.profile
+                                            pipeline.results[candidate.key]?.takeIf { it.matched }?.profile
                                         }
                                         conversations.observe(visibleProfiles, uniqueFaces.size,
-                                            preferences.getString("base_url", "").orEmpty(), pipeline.mode == RecognitionMode.LIVE)
-                                        pipeline.choose(faceCandidates, android.os.SystemClock.elapsedRealtime())?.let { selected ->
+                                            preferences.getString("base_url", "").orEmpty(), pipeline.enabled)
+                                        val configured = runCatching {
+                                            normalizeServerUrl(preferences.getString("base_url", "").orEmpty())
+                                            normalizeEndpointPath(preferences.getString("recognition_path", "/recognize").orEmpty())
+                                        }.isSuccess
+                                        (if (configured) pipeline.choose(faceCandidates, android.os.SystemClock.elapsedRealtime()) else null)?.let { selected ->
                                             retainedForJpeg = true
                                             pipeline.submit(image, rotation, selected, android.os.SystemClock.elapsedRealtime(),
                                                 preferences.getString("base_url", "").orEmpty(),
@@ -461,7 +495,15 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
             palette.onSurface.toArgb(), palette.onSurfaceVariant.toArgb(), palette.primary.toArgb(),
             type.headlineSmall.fontSize.value, type.bodyMedium.fontSize.value, type.labelSmall.fontSize.value)
         val profileRenderer = remember(profileStyle) { ProfileCardRenderer(profileStyle) }
-        Canvas(Modifier.fillMaxSize()) {
+        Canvas(Modifier.fillMaxSize().pointerInput(Unit) {
+            detectTapGestures { point ->
+                currentCards.value.lastOrNull { card ->
+                    card.width > 10 && card.height > 10 &&
+                        point.x >= card.x && point.x <= card.x + card.width &&
+                        point.y >= card.y && point.y <= card.y + card.height
+                }?.recognition?.takeIf { it.matched }?.profile?.let { expandedProfile = it }
+            }
+        }) {
             if (showFaceBoxes) {
                 val canvas = drawContext.canvas.nativeCanvas
                 paint.clearShadowLayer()
@@ -483,7 +525,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                     canvas.translate(card.x, card.y)
                     // Scale all text and panel geometry together with perspective.
                     canvas.scale(card.width / 320f, card.height / 180f)
-                    profileRenderer.draw(canvas, profileCardContent(card.number, card.recognition, pipeline.mode),
+                    profileRenderer.draw(canvas, profileCardContent(card.number, card.recognition, pipeline.enabled),
                         if (showFaceBoxes) String.format(java.util.Locale.US, "%.2f m · 顔幅推定", card.depthMeters) else null)
                     canvas.restoreToCount(saved)
                 }
@@ -499,7 +541,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                     Text("プロフィールを、そばに。", style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary)
                 }
-                TextButton(onClick = { showConversations = true }) { Text("会話・履歴") }
+                TextButton(onClick = onOpenConversations) { Text("会話・履歴") }
                 TextButton(onClick = { showSettings = true }) { Text("設定") }
             }
         }
@@ -508,46 +550,64 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
             contentColor = MaterialTheme.colorScheme.onSurface) {
             Column(Modifier.padding(ScouterSpace.md), verticalArrangement = Arrangement.spacedBy(ScouterSpace.sm)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(if (pipeline.mode == RecognitionMode.OFF) "スタンバイ" else when (pipeline.mode) {
-                        RecognitionMode.PREVIEW -> "切り抜き確認"
-                        RecognitionMode.MOCK -> "デモモード"
-                        else -> "PC認識中"
-                    }, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                    Text(if (!connectionReady) "PC接続先を設定" else if (pipeline.enabled) "PC認識中" else "PC認識は停止中",
+                        style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                     Text("${if (detectedBoxes.isEmpty()) 0 else detectionCount}人を検出", style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Text(failure ?: if (pipeline.mode == RecognitionMode.OFF) status else pipeline.status.take(80),
+                Text(failure ?: if (!connectionReady) "設定からPCの接続先を保存してください"
+                    else if (!pipeline.enabled) status else pipeline.status.take(80),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2)
-                if (conversations.enabled || conversations.uploadStatus.isNotBlank()) {
-                    Text(conversations.status, style = MaterialTheme.typography.bodySmall,
+                if (conversations.enabled) {
+                    Text(conversations.recordingLabel, style = MaterialTheme.typography.bodySmall,
                         color = if (conversations.recordingName != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
                     if (conversations.recordingName != null) TextButton(onClick = { conversations.disable() }) { Text("録音を終了・送信") }
                 }
+                if (conversations.cameraUploadStatus.isNotBlank()) Text(conversations.cameraUploadStatus,
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 FilledTonalButton(onClick = {
-                    if (pipeline.mode == RecognitionMode.OFF) showRecognition = true
-                    else { conversations.disable(); pipeline.changeMode(RecognitionMode.OFF) }
+                    if (!connectionReady) onOpenConnection()
+                    else if (!pipeline.enabled) { analysisEnabled = true; pipeline.setRunning(true) }
+                    else { conversations.disable(); pipeline.setRunning(false) }
                 }, modifier = Modifier.fillMaxWidth()) {
-                    Text(if (pipeline.mode == RecognitionMode.OFF) "認識モードを選ぶ" else "認識を停止")
+                    Text(if (!connectionReady) "PC接続先を設定" else if (pipeline.enabled) "認識を停止" else "PC認識を再開")
+                }
+                TextButton(onClick = {
+                    if (conversations.enabled) conversations.disable()
+                    else microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+                }, enabled = conversations.enabled || (pipeline.enabled && connectionReady && analysisEnabled),
+                    modifier = Modifier.fillMaxWidth()) {
+                    Text(if (conversations.enabled) "会話録音を停止" else "会話録音を開始")
                 }
             }
         }
     }
-    if (showConversations) ConversationScreen(conversations, pipeline.mode == RecognitionMode.LIVE,
-        onDismiss = { showConversations = false })
-    if (showRecognition) RecognitionPanel(pipeline, onDismiss = { showRecognition = false })
+    expandedProfile?.let { profile ->
+        AlertDialog(onDismissRequest = { expandedProfile = null },
+            title = { Text(profile.displayName) },
+            text = {
+                Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (profile.affiliation.isNotBlank()) Text(profile.affiliation,
+                        style = MaterialTheme.typography.titleSmall)
+                    Text(profile.bio.ifBlank { "表示する内容がありません" }, style = MaterialTheme.typography.bodyLarge)
+                }
+            },
+            confirmButton = { TextButton(onClick = { expandedProfile = null }) { Text("閉じる") } })
+    }
     if (showSettings) ScouterSettings(showFaceBoxes, if (detectedBoxes.isEmpty()) 0 else detectionCount,
         "$status\n${pipeline.status}\n$performance\n※fpsは表示遅延そのものの計測値ではありません。",
         analysisEnabled = analysisEnabled,
         onAnalysisChanged = {
             analysisEnabled = it
-            if (!it) { conversations.disable(); pipeline.changeMode(RecognitionMode.OFF); detectedBoxes = emptyList() }
+            if (!it) { conversations.disable(); pipeline.setRunning(false); detectedBoxes = emptyList() }
+            else pipeline.setRunning(true)
         },
         onBoxesChanged = { showFaceBoxes = it },
         onConnection = { showSettings = false; onOpenConnection() },
         onProfile = { showSettings = false; onOpenProfile() },
-        onRecognition = { showSettings = false; showRecognition = true },
-        onConversations = { showSettings = false; showConversations = true },
+        onConversations = { showSettings = false; onOpenConversations() },
         onReset = { conversations.disable(); resetVersion++; showSettings = false }, onDismiss = { showSettings = false })
 }
 

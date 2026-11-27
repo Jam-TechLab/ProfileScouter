@@ -3,14 +3,13 @@
  */
 package com.example.profilescouter.ui.designsystem
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -23,6 +22,30 @@ internal object ScouterSpace {
     val md = 16.dp
     val lg = 24.dp
     val xl = 32.dp
+}
+
+/** 長い履歴はドラッグで閉じない画面に表示し、縦操作を本文のスクロールに使う。 */
+@Composable
+internal fun ScouterHistoryPage(title: String, subtitle: String, onDismiss: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+            Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = ScouterSpace.lg, vertical = ScouterSpace.sm),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
+                    TextButton(onClick = onDismiss) { Text("閉じる") }
+                }
+                key(title) {
+                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState())
+                        .padding(horizontal = ScouterSpace.lg).padding(bottom = ScouterSpace.lg),
+                        verticalArrangement = Arrangement.spacedBy(ScouterSpace.md)) {
+                        Text(subtitle, style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        content()
+                    }
+                }
+            }
+        }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -81,24 +104,6 @@ internal fun ScouterSwitch(title: String, description: String, checked: Boolean,
             Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Switch(checked = checked, onCheckedChange = null)
-    }
-}
-
-@Composable
-internal fun ScouterModeOption(title: String, description: String, selected: Boolean, onSelect: () -> Unit) {
-    Surface(shape = MaterialTheme.shapes.medium,
-        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
-        contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-        border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null) {
-        Row(Modifier.fillMaxWidth().selectable(selected, role = Role.RadioButton, onClick = onSelect)
-            .padding(ScouterSpace.md), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(ScouterSpace.md)) {
-            RadioButton(selected = selected, onClick = null)
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(ScouterSpace.xs)) {
-                Text(title, style = MaterialTheme.typography.titleMedium)
-                Text(description, style = MaterialTheme.typography.bodySmall)
-            }
-        }
     }
 }
 

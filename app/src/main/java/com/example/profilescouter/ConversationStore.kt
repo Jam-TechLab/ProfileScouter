@@ -1,5 +1,5 @@
 /*
- * この端末で会った人と送信待ちの音声を保存し、再起動後も再送できるようにする。
+ * 会った人の一覧・顔アイコン・送信待ち音声と結果未確認の状態を端末内へ保存する。
  */
 package com.example.profilescouter
 
@@ -15,6 +15,29 @@ internal class ConversationStore(context: Context) {
     fun audio(id: String): File {
         require(java.util.UUID.fromString(id).toString() == id)
         return File(directory, "$id.m4a")
+    }
+    fun avatar(server: String, personId: Long): File {
+        require(personId > 0)
+        val key = java.security.MessageDigest.getInstance("SHA-256").digest(server.toByteArray())
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+        return File(directory, "recognized-face-$key-$personId.jpg")
+    }
+    fun saveAvatar(server: String, personId: Long, jpeg: ByteArray) {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, bounds)
+        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "顔写真を画像として読み込めません" }
+        val options = android.graphics.BitmapFactory.Options().apply { inSampleSize = 1 }
+        while (maxOf(bounds.outWidth, bounds.outHeight) / options.inSampleSize > 576) options.inSampleSize *= 2
+        val image = requireNotNull(android.graphics.BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, options)) {
+            "顔写真を画像として読み込めません"
+        }
+        val file = AtomicFile(avatar(server, personId))
+        try {
+            val bytes = bitmapToJpeg(image, maxEdge = 144)
+            val output = file.startWrite()
+            try { output.write(bytes); file.finishWrite(output) }
+            catch (error: Exception) { file.failWrite(output); throw error }
+        } finally { image.recycle() }
     }
     private fun read(): JSONObject = try {
         state.openRead().bufferedReader(Charsets.UTF_8).use { JSONObject(it.readText()) }
@@ -32,7 +55,8 @@ internal class ConversationStore(context: Context) {
             val j = list.getJSONObject(i)
             PendingConversation(j.getString("id"), j.getLong("personId"), j.getString("name"),
                 j.getString("server"), j.getLong("startedAt"), j.getLong("endedAt"),
-                if (j.isNull("error")) null else j.getString("error"))
+                if (j.isNull("error")) null else j.getString("error"),
+                j.optBoolean("awaitingResult", true))
         }.getOrNull() }.filter { runCatching { audio(it.id).isFile }.getOrDefault(false) }
     }
     fun save(encounters: List<Encounter>, pending: List<PendingConversation>) {
@@ -40,7 +64,8 @@ internal class ConversationStore(context: Context) {
             .put("personId", p.personId).put("name", p.name).put("server", p.server).put("lastSeen", p.lastSeen) }))
             .put("pending", JSONArray(pending.map { p -> JSONObject().put("id", p.id).put("personId", p.personId)
                 .put("name", p.name).put("server", p.server).put("startedAt", p.startedAt)
-                .put("endedAt", p.endedAt).put("error", p.error ?: JSONObject.NULL) }))
+                .put("endedAt", p.endedAt).put("error", p.error ?: JSONObject.NULL)
+                .put("awaitingResult", p.awaitingResult) }))
         val stream = state.startWrite()
         try { stream.write(json.toString().toByteArray(Charsets.UTF_8)); state.finishWrite(stream) }
         catch (error: Exception) { state.failWrite(stream); throw error }

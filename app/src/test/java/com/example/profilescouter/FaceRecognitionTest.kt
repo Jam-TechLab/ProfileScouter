@@ -1,5 +1,5 @@
 /*
- * 顔画像の切り抜き、認識応答の検証、認識モード変更時の状態管理を確認する単体テスト。
+ * 顔画像の切り抜き、PC認識応答の検証、起動時と停止・再開時の状態管理を確認する単体テスト。
  */
 package com.example.profilescouter
 
@@ -18,7 +18,7 @@ class FaceRecognitionTest {
         assertTrue(result.simpleProfile)
         assertEquals("", result.profile.userId)
         assertNull(result.similarity)
-        assertEquals("PROFILE · 受信済み", profileCardContent(1, result, RecognitionMode.LIVE).badge)
+        assertEquals("PROFILE · 受信済み", profileCardContent(1, result, true).badge)
         rejects { parseFaceResponse(json.put("requestId", "wrong-id").toString(), packet) }
     }
 
@@ -26,7 +26,7 @@ class FaceRecognitionTest {
         rejects { parseFaceResponse("{\"displayName\":\"山田\",\"affiliation\":null,\"bio\":\"\"}", packet) }
         rejects { parseFaceResponse("{\"displayName\":\"\",\"affiliation\":\"\",\"bio\":\"\"}", packet) }
     }
-    private val packet = FacePacket("request-1", "track-1", 123L, byteArrayOf(1), 1, FaceCrop(0, 0, 100, 100))
+    private val packet = FacePacket("request-1", "track-1")
     private fun response(): JSONObject = JSONObject()
         .put("schemaVersion", 1).put("requestId", "request-1").put("trackId", "track-1")
         .put("matched", true).put("userId", "user-1").put("similarity", 0.9)
@@ -59,19 +59,23 @@ class FaceRecognitionTest {
         assertEquals(FaceCrop(515, 355, 640, 480), paddedFaceCrop(540, 380, 640, 480, 640, 480))
     }
 
-    @Test fun pipelineStartsOfflineAndModeChangesClearResults() {
+    @Test fun pipelineStartsEnabledAndStopResumeClearResults() {
         val scope = CoroutineScope(SupervisorJob())
         try {
             val pipeline = FaceRecognitionPipeline(scope)
-            val candidates = listOf(FaceCandidate("track-1", 1, 12, FaceCrop(0, 0, 100, 100)))
-            assertNull(pipeline.choose(candidates, 10000))
-            pipeline.changeMode(RecognitionMode.MOCK)
+            val candidates = listOf(FaceCandidate("track-1", 1, FaceCrop(0, 0, 100, 100)))
+            assertTrue(pipeline.enabled)
             assertEquals("track-1", pipeline.choose(candidates, 10000)!!.key)
             pipeline.results["track-1"] = parseFaceResponse(response().toString(), packet)
-            pipeline.changeMode(RecognitionMode.LIVE)
+            pipeline.setRunning(false)
             assertTrue(pipeline.results.isEmpty())
-            pipeline.changeMode(RecognitionMode.OFF)
             assertNull(pipeline.choose(candidates, 20000))
+            pipeline.setRunning(true)
+            assertEquals("track-1", pipeline.choose(candidates, 20000)!!.key)
+            pipeline.results["track-1"] = parseFaceResponse(response().toString(), packet)
+            pipeline.reset()
+            assertTrue(pipeline.enabled)
+            assertTrue(pipeline.results.isEmpty())
         } finally { scope.cancel() }
     }
 

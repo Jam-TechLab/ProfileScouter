@@ -9,7 +9,8 @@ internal data class Encounter(val personId: Long, val name: String, val server: 
     val key: String get() = "$server|$personId"
 }
 internal data class PendingConversation(val id: String, val personId: Long, val name: String,
-    val server: String, val startedAt: Long, val endedAt: Long, val error: String? = null)
+    val server: String, val startedAt: Long, val endedAt: Long, val error: String? = null,
+    val awaitingResult: Boolean = false)
 internal data class ConversationEntry(val id: String, val personId: Long, val startedAt: Long,
     val endedAt: Long, val summary: String)
 internal data class ConversationPage(val entries: List<ConversationEntry>, val next: String?)

@@ -71,14 +71,14 @@ internal fun ConnectionPanel(snapshot: CameraSnapshot, onDismiss: () -> Unit) {
                     label = { Text("PCのアドレス") }, placeholder = { Text("192.168.1.10:8000") },
                     supportingText = { Text("http:// は省略できます。HTTPSの場合は https:// を指定。") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true)
-                Text("接続後は、設定の「認識モード」から「PCで認識」を開始してください。",
+                Text("接続先を保存すると、AR画面でPC認識を使用できます。",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Button(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
                     execute {
                         val base = saveSettings()
                         val response = withContext(Dispatchers.IO) { RecognitionClient(base, healthPath, imagePath).health() }
                         healthResponse = response
-                        "接続できました。認識モードを選んで開始できます。"
+                        "接続できました。AR画面でPC認識を使用できます。"
                     }
                 }) { Text("保存して接続を確認") }
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
