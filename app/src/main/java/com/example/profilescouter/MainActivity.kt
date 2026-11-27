@@ -29,6 +29,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -57,11 +58,6 @@ private fun ScouterScreen(conversations: ConversationViewModel) {
     var showConnection by remember { mutableStateOf(false) }
     var showProfile by rememberSaveable { mutableStateOf(false) }
     var showConversations by rememberSaveable { mutableStateOf(false) }
-    if (showConversations) {
-        BackHandler { showConversations = false }
-        ConversationScreen(conversations, onDismiss = { showConversations = false })
-        return
-    }
     if (showProfile) {
         OwnProfileScreen(onClose = { showProfile = false })
         return
@@ -77,13 +73,23 @@ private fun ScouterScreen(conversations: ConversationViewModel) {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background,
-        contentColor = MaterialTheme.colorScheme.onBackground) {
-        Box(Modifier.fillMaxSize()) {
-            if (granted) {
+    BackHandler(enabled = showConversations) { showConversations = false }
+    Scaffold(containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(selected = !showConversations, onClick = { showConversations = false },
+                    icon = { Icon(painterResource(R.drawable.ic_nav_camera), contentDescription = null) }, label = { Text("カメラ") })
+                NavigationBarItem(selected = showConversations, onClick = { showConnection = false; showConversations = true },
+                    icon = { Icon(painterResource(R.drawable.ic_nav_history), contentDescription = null) }, label = { Text("会話履歴") })
+            }
+        }) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
+            if (showConversations) {
+                ConversationScreen(conversations)
+            } else if (granted) {
                 SpatialScouter(Modifier.fillMaxSize(), snapshot, onOpenConnection = { showConnection = true },
-                    onOpenProfile = { showProfile = true }, onOpenConversations = { showConversations = true },
-                    conversations = conversations)
+                    onOpenProfile = { showProfile = true }, conversations = conversations)
             } else {
                 Column(
                     Modifier.align(Alignment.Center).padding(24.dp),

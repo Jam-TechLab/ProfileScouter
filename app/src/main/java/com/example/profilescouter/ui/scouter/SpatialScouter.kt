@@ -79,7 +79,7 @@ private data class ProjectedProfile(
 /** ARCore owns the camera; face JPEGs are made from the same frame as detection. */
 @Composable
 internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnapshot, onOpenConnection: () -> Unit,
-    onOpenProfile: () -> Unit, onOpenConversations: () -> Unit, conversations: ConversationViewModel) {
+    onOpenProfile: () -> Unit, conversations: ConversationViewModel) {
     val context = LocalContext.current
     val hostView = LocalView.current
     val executor = remember(context) { ContextCompat.getMainExecutor(context) }
@@ -95,7 +95,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
     var status by remember { mutableStateOf("端末をゆっくり動かして周囲を認識してください") }
     var failure by remember { mutableStateOf<String?>(null) }
     var resetVersion by remember { mutableIntStateOf(0) }
-    var showFaceBoxes by remember { mutableStateOf(true) }
+    var showFaceBoxes by remember { mutableStateOf(false) }
     var detectedBoxes by remember { mutableStateOf<List<DetectedFaceBox>>(emptyList()) }
     var detectionCount by remember { mutableIntStateOf(0) }
     val runtime = remember { SpatialRuntime() }
@@ -549,10 +549,7 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                 verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Profile Scouter", style = MaterialTheme.typography.titleMedium)
-                    Text("プロフィールを、そばに。", style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary)
                 }
-                TextButton(onClick = onOpenConversations) { Text("会話・履歴") }
                 TextButton(onClick = { showSettings = true }) { Text("設定") }
             }
         }
@@ -563,11 +560,13 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(if (!connectionReady) "PC接続先を設定" else if (pipeline.enabled) "PC認識中" else "PC認識は停止中",
                         style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-                    Text("${if (detectedBoxes.isEmpty()) 0 else detectionCount}人を検出", style = MaterialTheme.typography.labelMedium,
+                    if (showFaceBoxes) Text("${if (detectedBoxes.isEmpty()) 0 else detectionCount}人を検出", style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Text(failure ?: if (!connectionReady) "設定からPCの接続先を保存してください"
-                    else if (!pipeline.enabled) status else pipeline.status.take(80),
+                    else if (!pipeline.enabled) "認識を再開するとプロフィールを表示します"
+                    else if (pipeline.status.startsWith("認識エラー")) "人物を認識できません。PCとの接続を確認してください"
+                    else if (showFaceBoxes) pipeline.status.take(80) else "カメラを相手に向けてください",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2)
                 if (conversations.enabled) {
@@ -618,7 +617,6 @@ internal fun SpatialScouter(modifier: Modifier = Modifier, snapshot: CameraSnaps
         onBoxesChanged = { showFaceBoxes = it },
         onConnection = { showSettings = false; onOpenConnection() },
         onProfile = { showSettings = false; onOpenProfile() },
-        onConversations = { showSettings = false; onOpenConversations() },
         onReset = { conversations.disable(); resetVersion++; showSettings = false }, onDismiss = { showSettings = false })
 }
 

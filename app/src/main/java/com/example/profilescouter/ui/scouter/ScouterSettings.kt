@@ -16,7 +16,7 @@ import androidx.compose.runtime.*
 internal fun ScouterSettings(showBoxes: Boolean, detectionCount: Int, status: String,
     analysisEnabled: Boolean, onAnalysisChanged: (Boolean) -> Unit,
     onBoxesChanged: (Boolean) -> Unit, onConnection: () -> Unit, onProfile: () -> Unit,
-    onConversations: () -> Unit, onReset: () -> Unit, onDismiss: () -> Unit) {
+    onReset: () -> Unit, onDismiss: () -> Unit) {
     var diagnostics by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
     ScouterSheet("設定", "見る・つながる・自分の情報を整える", onDismiss) {
@@ -24,17 +24,13 @@ internal fun ScouterSettings(showBoxes: Boolean, detectionCount: Int, status: St
             ScouterAction("PCに接続", "認識に使うPCのアドレスを設定", onConnection)
             HorizontalDivider()
             ScouterAction("プロフィール登録", "3方向の顔写真とプロフィールをPCへ登録", onProfile)
-            HorizontalDivider()
-            ScouterAction("会話と履歴", "録音・送信待ち・会った人の共有会話履歴", onConversations)
-        }
-        ScouterSection("表示") {
-            ScouterSwitch("顔の枠を表示", "現在 ${detectionCount}人を検出", showBoxes, onBoxesChanged)
         }
         TextButton(onClick = { diagnostics = !diagnostics }) {
             Text(if (diagnostics) "詳細設定を閉じる" else "詳細設定・動作確認")
         }
         if (diagnostics) {
             ScouterSection("動作確認") {
+                ScouterSwitch("顔の枠と認識の詳細", "現在 ${detectionCount}人を検出", showBoxes, onBoxesChanged)
                 ScouterSwitch("顔の解析", "一時停止して映像を確認できます", analysisEnabled, onAnalysisChanged)
             }
             ScouterNotice(status)

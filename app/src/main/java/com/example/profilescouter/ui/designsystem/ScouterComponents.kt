@@ -26,14 +26,13 @@ internal object ScouterSpace {
 
 /** 長い履歴はドラッグで閉じない画面に表示し、縦操作を本文のスクロールに使う。 */
 @Composable
-internal fun ScouterHistoryPage(title: String, subtitle: String, onDismiss: () -> Unit,
+internal fun ScouterHistoryPage(title: String, subtitle: String,
     content: @Composable ColumnScope.() -> Unit) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = ScouterSpace.lg, vertical = ScouterSpace.sm),
                     verticalAlignment = Alignment.CenterVertically) {
                     Text(title, Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
-                    TextButton(onClick = onDismiss) { Text("閉じる") }
                 }
                 key(title) {
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState())

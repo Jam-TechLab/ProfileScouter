@@ -57,8 +57,9 @@ internal class ProfileCardRenderer(private val style: ProfileCardStyle) {
         paint.style = Paint.Style.FILL
         paint.color = style.surface
         canvas.drawRoundRect(0f, 0f, 320f, 180f, 16f, 16f, paint)
-        val positions = floatArrayOf(12f, 34f, 70f, 96f)
+        val positions = if (debug == null) floatArrayOf(12f, 18f, 54f, 80f) else floatArrayOf(12f, 34f, 70f, 96f)
         layouts.forEachIndexed { index, text ->
+            if (index == 0 && debug == null) return@forEachIndexed
             val saved = canvas.save()
             canvas.translate(16f, positions[index])
             text.draw(canvas)

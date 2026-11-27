@@ -29,7 +29,7 @@ import kotlinx.coroutines.withContext
 private fun conversationTime(ms: Long) = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(ms))
 
 @Composable
-internal fun ConversationScreen(model: ConversationViewModel, onDismiss: () -> Unit) {
+internal fun ConversationScreen(model: ConversationViewModel) {
     var person by remember { mutableStateOf<Encounter?>(null) }
     var deleteId by remember { mutableStateOf<String?>(null) }
     var resendId by remember { mutableStateOf<String?>(null) }
@@ -37,7 +37,7 @@ internal fun ConversationScreen(model: ConversationViewModel, onDismiss: () -> U
     var showRecording by remember { mutableStateOf(false) }
     BackHandler(enabled = person != null) { person = null }
     ScouterHistoryPage(person?.name ?: "会話と履歴", if (person == null) "認識した相手との会話を録音し、要約を履歴に残します。"
-        else "この人物の共有履歴です。別の端末が追加した会話も表示します。", onDismiss) {
+        else "この人物の共有履歴です。別の端末が追加した会話も表示します。") {
         if (person == null) {
             Text("会った人", style = MaterialTheme.typography.titleMedium)
             if (model.encounters.isNotEmpty()) Text("顔写真は、カメラで人物を認識したときに保存されます。",
