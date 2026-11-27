@@ -3,6 +3,14 @@
  */
 package com.example.profilescouter
 
+import com.example.profilescouter.core.camera.CameraSnapshot
+import com.example.profilescouter.ui.connection.ConnectionPanel
+import com.example.profilescouter.ui.conversation.ConversationScreen
+import com.example.profilescouter.ui.conversation.ConversationViewModel
+import com.example.profilescouter.ui.registration.OwnProfileScreen
+import com.example.profilescouter.ui.scouter.SpatialScouter
+import com.example.profilescouter.ui.theme.ProfileScouterTheme
+
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -27,7 +35,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.example.profilescouter.ui.theme.ProfileScouterTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {

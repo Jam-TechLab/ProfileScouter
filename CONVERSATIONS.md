@@ -4,11 +4,11 @@
 
 | ファイル | 役割 |
 | --- | --- |
-| Conversation.kt | 対象人物・会話データ・録音開始終了の判定 |
-| ConversationViewModel.kt | MediaRecorder・前景停止・送信待ちと再送・履歴画面の状態 |
-| ConversationStore.kt | 会った人・顔アイコン・送信待ちと結果未確認の永続保存 |
-| ConversationClient.kt | 音声HTTP送信・共有履歴取得・応答検証 |
-| ConversationScreen.kt | 録音のON/OFF、猶予と録音上限、再送、人物一覧と履歴 |
+| model/Conversation.kt | 対象人物・会話データ・録音開始終了の判定 |
+| ui/conversation/ConversationViewModel.kt | MediaRecorder・前景停止・送信待ちと再送・履歴画面の状態 |
+| data/conversation/ConversationRepository.kt | 会話通信、会った人・顔アイコン・送信待ちと結果未確認の保存 |
+| data/conversation/ConversationClient.kt | 音声HTTP送信・共有履歴取得・応答検証 |
+| ui/conversation/ConversationScreen.kt | 猶予と録音上限、再送、人物一覧と履歴 |
 
 MainActivityがActivity単位のViewModelを保持する。SpatialScouterは、その瞬間に顔検出した候補の実人物IDを通知する。画面外に保持しているARカードや一時追跡IDを、人物の継続認識としては使わない。
 

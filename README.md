@@ -3,28 +3,41 @@
 顔を認識して、その人の横へプロフィールを表示するAndroidアプリ。
 Kotlin / Jetpack Compose / Material 3 / ARCore / ML Kitを使用。
 
-## コードの入口
+## 構成
 
-| 機能 | ファイル |
-| --- | --- |
-| 起動・画面切替・カメラ権限 | `MainActivity.kt` |
-| 空間AR・顔検出・追従 | `SpatialScouter.kt` |
-| 追跡ID・重複検出の判定 | `FaceTrackPolicy.kt` |
-| カメラ／画面／空間の座標変換 | `SpatialMath.kt` |
-| カメラ画像取得・YUV変換・JPEG化 | `CameraSnapshot.kt` |
-| 認識への送信制御・応答解析 | `FaceRecognition.kt` |
-| 認識HTTP・URL設定の検証 | `RecognitionClient.kt` |
-| ARプロフィールの内容・描画 | `ProfileCard.kt` |
-| 接続・設定のUI | `ConnectionPanel.kt` / `ScouterSettings.kt` |
-| プロフィール入力・3方向撮影・確認UI | `OwnProfileScreen.kt` |
-| 写真の読み込み・向き補正・正面の顔検証 | `RegistrationPhoto.kt` |
-| 登録送信状態の維持 | `RegistrationViewModel.kt` |
-| 登録HTTP・JSON結果の検証 | `RegistrationClient.kt` |
-| 共通UI・色・文字 | `ui/designsystem/` / `ui/theme/` |
+小規模なMVVMを基本に、UIは機能ごと、通信・保存と共通モデルは役割ごとに配置する。
 
-画面、HTTP処理、画像処理、追跡の判定は役割ごとに分離する。
-1つの小機能だけのファイルを追加する前に、上記の既存ファイルに含められるか確認する。
-未使用になった旧実装は残さず、履歴が必要ならGitを参照する。
+```text
+com.example.profilescouter/
+├── MainActivity.kt           起動・画面切り替え
+├── ui/
+│   ├── scouter/             AR画面・ScouterState・カード・追跡と座標変換
+│   ├── conversation/        会話履歴画面・ConversationViewModel
+│   ├── registration/        登録画面・RegistrationViewModel・写真の準備
+│   ├── connection/          接続設定画面
+│   ├── designsystem/        共通UI部品
+│   └── theme/               色・書体
+├── data/
+│   ├── conversation/        会話Repository・HTTPクライアント・応答解析
+│   ├── recognition/         顔認識Repository・認識応答の検証
+│   └── registration/        登録Repository
+├── model/                   人物・顔・会話・登録のデータと判定規則
+└── core/
+    ├── camera/              画像取得・変換・JPEG化
+    └── network/             接続先URL・APIパスの共通検証
+```
+
+画面の操作をViewModelへ渡し、ViewModelがRepositoryを呼んで表示状態を更新する。
+登録と会話のように画面回転・切り替えをまたいで保持する状態はViewModelが担当する。
+ARの認識状態はカメラ画面と一緒に終了するため、`ui/scouter/ScouterState.kt` という画面専用の状態ホルダーを使う。
+カメラ・アンカー・描画はAR画面の寿命に合わせて管理する。
+
+`ConversationRepository` は通信と端末保存の窓口。送信後の最新会話取得もここで行い、ViewModelはHTTPクライアントを直接生成しない。
+認識JSONの解析は `data/recognition/FaceResponse.kt`、データ型は `model/FaceRecognition.kt` に分ける。
+テストのパッケージも対象コードと同じ配置にする。
+
+この規模では空のRepositoryインターフェース・UseCase層・DIライブラリを追加しない。
+既存クラスに役割を持たせ、未使用の旧実装は残さない。履歴はGitを参照する。
 
 ## 開発・連携
 
